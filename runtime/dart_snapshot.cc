@@ -6,12 +6,12 @@
 
 #include <sstream>
 
-#include "flutter/common/runtime.h"
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/lib/snapshot/snapshot.h"
 #include "flutter/runtime/dart_vm.h"
+#include "third_party/dart/runtime/include/dart_api.h"
 
 namespace flutter {
 
@@ -25,7 +25,7 @@ const char* DartSnapshot::kIsolateInstructionsSymbol =
 // data through symbols that are statically linked into the executable.
 // On other platforms this data is obtained by a dynamic symbol lookup.
 #define DART_SNAPSHOT_STATIC_LINK \
-  (OS_WIN || (OS_ANDROID && FLUTTER_JIT_RUNTIME))
+  ((OS_WIN || OS_ANDROID) && FLUTTER_JIT_RUNTIME)
 
 #if !DART_SNAPSHOT_STATIC_LINK
 
@@ -155,7 +155,7 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateInstructions(
 #endif  // DART_SNAPSHOT_STATIC_LINK
 }
 
-fml::RefPtr<DartSnapshot> DartSnapshot::VMSnapshotFromSettings(
+fml::RefPtr<const DartSnapshot> DartSnapshot::VMSnapshotFromSettings(
     const Settings& settings) {
   TRACE_EVENT0("flutter", "DartSnapshot::VMSnapshotFromSettings");
   auto snapshot =
@@ -168,13 +168,24 @@ fml::RefPtr<DartSnapshot> DartSnapshot::VMSnapshotFromSettings(
   return nullptr;
 }
 
-fml::RefPtr<DartSnapshot> DartSnapshot::IsolateSnapshotFromSettings(
+fml::RefPtr<const DartSnapshot> DartSnapshot::IsolateSnapshotFromSettings(
     const Settings& settings) {
   TRACE_EVENT0("flutter", "DartSnapshot::IsolateSnapshotFromSettings");
   auto snapshot =
       fml::MakeRefCounted<DartSnapshot>(ResolveIsolateData(settings),         //
                                         ResolveIsolateInstructions(settings)  //
       );
+  if (snapshot->IsValid()) {
+    return snapshot;
+  }
+  return nullptr;
+}
+
+fml::RefPtr<DartSnapshot> DartSnapshot::IsolateSnapshotFromMappings(
+    std::shared_ptr<const fml::Mapping> snapshot_data,
+    std::shared_ptr<const fml::Mapping> snapshot_instructions) {
+  auto snapshot =
+      fml::MakeRefCounted<DartSnapshot>(snapshot_data, snapshot_instructions);
   if (snapshot->IsValid()) {
     return snapshot;
   }
@@ -201,6 +212,18 @@ const uint8_t* DartSnapshot::GetDataMapping() const {
 
 const uint8_t* DartSnapshot::GetInstructionsMapping() const {
   return instructions_ ? instructions_->GetMapping() : nullptr;
+}
+
+bool DartSnapshot::IsNullSafetyEnabled(const fml::Mapping* kernel) const {
+  return ::Dart_DetectNullSafety(
+      nullptr,           // script_uri (unsupported by Flutter)
+      nullptr,           // package_config (package resolution of parent used)
+      nullptr,           // original_working_directory (no package config)
+      GetDataMapping(),  // snapshot_data
+      GetInstructionsMapping(),                 // snapshot_instructions
+      kernel ? kernel->GetMapping() : nullptr,  // kernel_buffer
+      kernel ? kernel->GetSize() : 0u           // kernel_buffer_size
+  );
 }
 
 }  // namespace flutter

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.6
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -88,7 +89,8 @@ class Square4x4Image {
 
   static List<int> get bytes {
     const int bytesPerChannel = 4;
-    final List<int> result = List<int>(_kWidth * _kWidth * bytesPerChannel);
+    final List<int> result = List<int>.filled(
+        _kWidth * _kWidth * bytesPerChannel, 0);
 
     void fillWithColor(Color color, int min, int max) {
       for (int i = min; i < max; i++) {
@@ -113,7 +115,7 @@ class GrayscaleImage {
   GrayscaleImage._();
 
   static Future<Image> load() async {
-    final Uint8List bytes = await readFile('4x4.png');
+    final Uint8List bytes = await readFile('2x2.png');
     final Completer<Image> completer = Completer<Image>();
     decodeImageFromList(bytes, (Image image) => completer.complete(image));
     return await completer.future;

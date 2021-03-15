@@ -4,9 +4,10 @@
   },
   "sandbox": {
     "features": [
+      "config-data",
       "root-ssl-certificates",
-      "deprecated-ambient-replace-as-executable",
-      "vulkan"
+      "vulkan",
+      "isolated-cache-storage"
     ],
     "services": [
       "fuchsia.accessibility.SettingsManager",
@@ -15,8 +16,9 @@
       "fuchsia.deprecatedtimezone.Timezone",
       "fuchsia.feedback.CrashReporter",
       "fuchsia.fonts.Provider",
+      "fuchsia.intl.PropertyProvider",
+      "fuchsia.logger.LogSink",
       "fuchsia.net.NameLookup",
-      "fuchsia.netstack.Netstack",
       "fuchsia.posix.socket.Provider",
       "fuchsia.sysmem.Allocator",
       "fuchsia.timezone.Timezone",

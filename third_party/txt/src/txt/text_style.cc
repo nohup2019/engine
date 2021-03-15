@@ -23,8 +23,7 @@
 
 namespace txt {
 
-TextStyle::TextStyle()
-    : font_families(std::vector<std::string>(1, GetDefaultFontFamily())) {}
+TextStyle::TextStyle() : font_families(GetDefaultFontFamilies()) {}
 
 bool TextStyle::equals(const TextStyle& other) const {
   if (color != other.color)
@@ -48,6 +47,11 @@ bool TextStyle::equals(const TextStyle& other) const {
   if (height != other.height)
     return false;
   if (has_height_override != other.has_height_override)
+    return false;
+  if (has_leading_distribution_override !=
+      other.has_leading_distribution_override)
+    return false;
+  if (half_leading != other.half_leading)
     return false;
   if (locale != other.locale)
     return false;

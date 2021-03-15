@@ -15,24 +15,30 @@
 #include "flutter/fml/build_config.h"
 #include "flutter/fml/memory/weak_ptr.h"
 #include "flutter/fml/synchronization/waitable_event.h"
+#include "flutter/lib/ui/hint_freed_delegate.h"
 #include "flutter/lib/ui/io_manager.h"
 #include "flutter/lib/ui/isolate_name_server/isolate_name_server.h"
 #include "flutter/lib/ui/painting/image_decoder.h"
+#include "flutter/lib/ui/snapshot_delegate.h"
+#include "flutter/lib/ui/volatile_path_tracker.h"
 #include "third_party/dart/runtime/include/dart_api.h"
-#include "third_party/skia/include/gpu/GrContext.h"
+#include "third_party/skia/include/gpu/GrDirectContext.h"
 #include "third_party/tonic/dart_microtask_queue.h"
 #include "third_party/tonic/dart_persistent_value.h"
 #include "third_party/tonic/dart_state.h"
 
 namespace flutter {
 class FontSelector;
-class Window;
+class PlatformConfiguration;
 
 class UIDartState : public tonic::DartState {
  public:
   static UIDartState* Current();
 
   Dart_Port main_port() const { return main_port_; }
+  // Root isolate of the VM application
+  bool IsRootIsolate() const { return is_root_isolate_; }
+  static void ThrowIfUIOperationsProhibited();
 
   void SetDebugName(const std::string name);
 
@@ -40,7 +46,9 @@ class UIDartState : public tonic::DartState {
 
   const std::string& logger_prefix() const { return logger_prefix_; }
 
-  Window* window() const { return window_.get(); }
+  PlatformConfiguration* platform_configuration() const {
+    return platform_configuration_.get();
+  }
 
   const TaskRunners& GetTaskRunners() const;
 
@@ -52,6 +60,14 @@ class UIDartState : public tonic::DartState {
 
   fml::RefPtr<flutter::SkiaUnrefQueue> GetSkiaUnrefQueue() const;
 
+  std::shared_ptr<VolatilePathTracker> GetVolatilePathTracker() const;
+
+  fml::WeakPtr<SnapshotDelegate> GetSnapshotDelegate() const;
+
+  fml::WeakPtr<HintFreedDelegate> GetHintFreedDelegate() const;
+
+  fml::WeakPtr<GrDirectContext> GetResourceContext() const;
+
   fml::WeakPtr<ImageDecoder> GetImageDecoder() const;
 
   std::shared_ptr<IsolateNameServer> GetIsolateNameServer() const;
@@ -60,6 +76,8 @@ class UIDartState : public tonic::DartState {
 
   void ReportUnhandledException(const std::string& error,
                                 const std::string& stack_trace);
+
+  bool enable_skparagraph() const;
 
   template <class T>
   static flutter::SkiaGPUObject<T> CreateGPUObject(sk_sp<T> object) {
@@ -76,6 +94,8 @@ class UIDartState : public tonic::DartState {
   UIDartState(TaskRunners task_runners,
               TaskObserverAdd add_callback,
               TaskObserverRemove remove_callback,
+              fml::WeakPtr<SnapshotDelegate> snapshot_delegate,
+              fml::WeakPtr<HintFreedDelegate> hint_freed_delegate,
               fml::WeakPtr<IOManager> io_manager,
               fml::RefPtr<SkiaUnrefQueue> skia_unref_queue,
               fml::WeakPtr<ImageDecoder> image_decoder,
@@ -83,11 +103,15 @@ class UIDartState : public tonic::DartState {
               std::string advisory_script_entrypoint,
               std::string logger_prefix,
               UnhandledExceptionCallback unhandled_exception_callback,
-              std::shared_ptr<IsolateNameServer> isolate_name_server);
+              std::shared_ptr<IsolateNameServer> isolate_name_server,
+              bool is_root_isolate_,
+              std::shared_ptr<VolatilePathTracker> volatile_path_tracker,
+              bool enable_skparagraph);
 
   ~UIDartState() override;
 
-  void SetWindow(std::unique_ptr<Window> window);
+  void SetPlatformConfiguration(
+      std::unique_ptr<PlatformConfiguration> platform_configuration);
 
   const std::string& GetAdvisoryScriptURI() const;
 
@@ -99,18 +123,23 @@ class UIDartState : public tonic::DartState {
   const TaskRunners task_runners_;
   const TaskObserverAdd add_callback_;
   const TaskObserverRemove remove_callback_;
+  fml::WeakPtr<SnapshotDelegate> snapshot_delegate_;
+  fml::WeakPtr<HintFreedDelegate> hint_freed_delegate_;
   fml::WeakPtr<IOManager> io_manager_;
   fml::RefPtr<SkiaUnrefQueue> skia_unref_queue_;
   fml::WeakPtr<ImageDecoder> image_decoder_;
+  std::shared_ptr<VolatilePathTracker> volatile_path_tracker_;
   const std::string advisory_script_uri_;
   const std::string advisory_script_entrypoint_;
   const std::string logger_prefix_;
   Dart_Port main_port_ = ILLEGAL_PORT;
+  const bool is_root_isolate_;
   std::string debug_name_;
-  std::unique_ptr<Window> window_;
+  std::unique_ptr<PlatformConfiguration> platform_configuration_;
   tonic::DartMicrotaskQueue microtask_queue_;
   UnhandledExceptionCallback unhandled_exception_callback_;
   const std::shared_ptr<IsolateNameServer> isolate_name_server_;
+  const bool enable_skparagraph_;
 
   void AddOrRemoveTaskObserver(bool add);
 };

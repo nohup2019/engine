@@ -16,22 +16,29 @@ namespace fml {
 
 class MessageLoopImpl;
 
-class TaskRunner : public fml::RefCountedThreadSafe<TaskRunner> {
+class BasicTaskRunner {
+ public:
+  virtual void PostTask(const fml::closure& task) = 0;
+};
+
+class TaskRunner : public fml::RefCountedThreadSafe<TaskRunner>,
+                   public BasicTaskRunner {
  public:
   virtual ~TaskRunner();
 
-  virtual void PostTask(fml::closure task);
+  virtual void PostTask(const fml::closure& task) override;
 
-  virtual void PostTaskForTime(fml::closure task, fml::TimePoint target_time);
+  virtual void PostTaskForTime(const fml::closure& task,
+                               fml::TimePoint target_time);
 
-  virtual void PostDelayedTask(fml::closure task, fml::TimeDelta delay);
+  virtual void PostDelayedTask(const fml::closure& task, fml::TimeDelta delay);
 
   virtual bool RunsTasksOnCurrentThread();
 
   virtual TaskQueueId GetTaskQueueId();
 
   static void RunNowOrPostTask(fml::RefPtr<fml::TaskRunner> runner,
-                               fml::closure task);
+                               const fml::closure& task);
 
  protected:
   TaskRunner(fml::RefPtr<MessageLoopImpl> loop);

@@ -9,10 +9,10 @@
 #include <unordered_map>
 
 #include "flutter/flow/embedded_views.h"
+#include "flutter/fml/hash_combine.h"
 #include "flutter/fml/macros.h"
-#include "flutter/shell/common/canvas_spy.h"
-#include "flutter/shell/platform/embedder/embedder_render_target.h"
-#include "third_party/skia/include/core/SkPictureRecorder.h"
+#include "flutter/shell/platform/embedder/embedder_external_view.h"
+#include "flutter/shell/platform/embedder/embedder_render_target_cache.h"
 
 namespace flutter {
 
@@ -30,7 +30,7 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
  public:
   using CreateRenderTargetCallback =
       std::function<std::unique_ptr<EmbedderRenderTarget>(
-          GrContext* context,
+          GrDirectContext* context,
           const FlutterBackingStoreConfig& config)>;
   using PresentCallback =
       std::function<bool(const std::vector<const FlutterLayer*>& layers)>;
@@ -39,6 +39,11 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   //----------------------------------------------------------------------------
   /// @brief      Creates an external view embedder used by the generic embedder
   ///             API.
+  ///
+  /// @param[in] avoid_backing_store_cache If set, create_render_target callback
+  ///                                      will beinvoked every frame for every
+  ///                                      engine composited layer. The result
+  ///                                      will not cached.
   ///
   /// @param[in]  create_render_target_callback
   ///                                     The render target callback used to
@@ -49,8 +54,9 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   ///                                     embedder for presentation.
   ///
   EmbedderExternalViewEmbedder(
-      CreateRenderTargetCallback create_render_target_callback,
-      PresentCallback present_callback);
+      bool avoid_backing_store_cache,
+      const CreateRenderTargetCallback& create_render_target_callback,
+      const PresentCallback& present_callback);
 
   //----------------------------------------------------------------------------
   /// @brief      Collects the external view embedder.
@@ -73,9 +79,11 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   void CancelFrame() override;
 
   // |ExternalViewEmbedder|
-  void BeginFrame(SkISize frame_size,
-                  GrContext* context,
-                  double device_pixel_ratio) override;
+  void BeginFrame(
+      SkISize frame_size,
+      GrDirectContext* context,
+      double device_pixel_ratio,
+      fml::RefPtr<fml::RasterThreadMerger> raster_thread_merger) override;
 
   // |ExternalViewEmbedder|
   void PrerollCompositeEmbeddedView(
@@ -89,55 +97,25 @@ class EmbedderExternalViewEmbedder final : public ExternalViewEmbedder {
   SkCanvas* CompositeEmbeddedView(int view_id) override;
 
   // |ExternalViewEmbedder|
-  bool SubmitFrame(GrContext* context) override;
+  void SubmitFrame(
+      GrDirectContext* context,
+      std::unique_ptr<SurfaceFrame> frame,
+      const std::shared_ptr<fml::SyncSwitch>& gpu_disable_sync_switch) override;
 
   // |ExternalViewEmbedder|
-  sk_sp<SkSurface> GetRootSurface() override;
+  SkCanvas* GetRootCanvas() override;
 
  private:
-  using ViewIdentifier = int64_t;
-  struct RegistryKey {
-    ViewIdentifier view_identifier = 0;
-    SkISize size = SkISize::Make(0, 0);
-
-    RegistryKey(ViewIdentifier view_identifier,
-                const FlutterBackingStoreConfig& config)
-        : view_identifier(view_identifier),
-          size(SkISize::Make(config.size.width, config.size.height)) {}
-
-    struct Hash {
-      constexpr std::size_t operator()(RegistryKey const& key) const {
-        return key.view_identifier;
-      };
-    };
-
-    struct Equal {
-      constexpr bool operator()(const RegistryKey& lhs,
-                                const RegistryKey& rhs) const {
-        return lhs.view_identifier == rhs.view_identifier &&
-               lhs.size == rhs.size;
-      }
-    };
-  };
-
+  const bool avoid_backing_store_cache_;
   const CreateRenderTargetCallback create_render_target_callback_;
   const PresentCallback present_callback_;
   SurfaceTransformationCallback surface_transformation_callback_;
-  using Registry = std::unordered_map<RegistryKey,
-                                      std::shared_ptr<EmbedderRenderTarget>,
-                                      RegistryKey::Hash,
-                                      RegistryKey::Equal>;
-
   SkISize pending_frame_size_ = SkISize::Make(0, 0);
   double pending_device_pixel_ratio_ = 1.0;
   SkMatrix pending_surface_transformation_;
-  std::map<ViewIdentifier, std::unique_ptr<SkPictureRecorder>>
-      pending_recorders_;
-  std::map<ViewIdentifier, std::unique_ptr<CanvasSpy>> pending_canvas_spies_;
-  std::map<ViewIdentifier, EmbeddedViewParams> pending_params_;
-  std::vector<ViewIdentifier> composition_order_;
-  std::shared_ptr<EmbedderRenderTarget> root_render_target_;
-  Registry registry_;
+  EmbedderExternalView::PendingViews pending_views_;
+  std::vector<EmbedderExternalView::ViewIdentifier> composition_order_;
+  EmbedderRenderTargetCache render_target_cache_;
 
   void Reset();
 

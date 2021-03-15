@@ -4,18 +4,22 @@
 
 #define FML_USED_ON_EMBEDDER
 
+#include "flutter/fml/message_loop_task_queues.h"
+
 #include <thread>
 
-#include "flutter/fml/message_loop_task_queues.h"
 #include "flutter/fml/synchronization/count_down_latch.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "gtest/gtest.h"
+
+namespace fml {
+namespace testing {
 
 class TestWakeable : public fml::Wakeable {
  public:
   using WakeUpCall = std::function<void(const fml::TimePoint)>;
 
-  TestWakeable(WakeUpCall call) : wake_up_call_(call) {}
+  explicit TestWakeable(WakeUpCall call) : wake_up_call_(call) {}
 
   void WakeUp(fml::TimePoint time_point) override { wake_up_call_(time_point); }
 
@@ -69,12 +73,13 @@ TEST(MessageLoopTaskQueue, PreserveTaskOrdering) {
   task_queue->RegisterTask(
       queue_id, [&test_val]() { test_val = 2; }, fml::TimePoint::Now());
 
-  std::vector<fml::closure> invocations;
-  task_queue->GetTasksToRunNow(queue_id, fml::FlushType::kAll, invocations);
-
+  const auto now = fml::TimePoint::Now();
   int expected_value = 1;
-
-  for (auto& invocation : invocations) {
+  for (;;) {
+    fml::closure invocation = task_queue->GetNextTaskToRun(queue_id, now);
+    if (!invocation) {
+      break;
+    }
     invocation();
     ASSERT_TRUE(test_val == expected_value);
     expected_value++;
@@ -174,7 +179,16 @@ TEST(MessageLoopTaskQueue, NotifyObserversWhileCreatingQueues) {
   notify_observers.join();
 }
 
-TEST(MessageLoopTaskQueue, ConcurrentQueueAndTaskCreatingCounts) {
+TEST(MessageLoopTaskQueue, QueueDoNotOwnItself) {
+  auto task_queue = fml::MessageLoopTaskQueues::GetInstance();
+  auto queue_id = task_queue->CreateTaskQueue();
+  ASSERT_FALSE(task_queue->Owns(queue_id, queue_id));
+}
+
+// TODO(chunhtai): This unit-test is flaky and sometimes fails asynchronizely
+// after the test has finished.
+// https://github.com/flutter/flutter/issues/43858
+TEST(MessageLoopTaskQueue, DISABLED_ConcurrentQueueAndTaskCreatingCounts) {
   auto task_queues = fml::MessageLoopTaskQueues::GetInstance();
   const int base_queue_id = task_queues->CreateTaskQueue();
 
@@ -192,17 +206,19 @@ TEST(MessageLoopTaskQueue, ConcurrentQueueAndTaskCreatingCounts) {
   auto creation_func = [&] {
     for (int i = 0; i < num_queues; i++) {
       fml::TaskQueueId queue_id = task_queues->CreateTaskQueue();
-      created[queue_id - base_queue_id] = true;
+      int limit = queue_id - base_queue_id;
+      created[limit] = true;
 
-      for (int cur_q = 1; cur_q < i; cur_q++) {
-        if (created[cur_q - base_queue_id]) {
-          std::scoped_lock counter(task_count_mutex[cur_q - base_queue_id]);
+      for (int cur_q = 1; cur_q < limit; cur_q++) {
+        if (created[cur_q]) {
+          std::scoped_lock counter(task_count_mutex[cur_q]);
           int cur_num_tasks = rand() % 10;
           for (int k = 0; k < cur_num_tasks; k++) {
             task_queues->RegisterTask(
-                fml::TaskQueueId(cur_q), [] {}, fml::TimePoint::Now());
+                fml::TaskQueueId(base_queue_id + cur_q), [] {},
+                fml::TimePoint::Now());
           }
-          num_tasks[cur_q - base_queue_id] += cur_num_tasks;
+          num_tasks[cur_q] += cur_num_tasks;
         }
       }
     }
@@ -227,3 +243,45 @@ TEST(MessageLoopTaskQueue, ConcurrentQueueAndTaskCreatingCounts) {
   creation_1.join();
   creation_2.join();
 }
+
+TEST(MessageLoopTaskQueue, RegisterTaskWakesUpOwnerQueue) {
+  auto task_queue = fml::MessageLoopTaskQueues::GetInstance();
+  auto platform_queue = task_queue->CreateTaskQueue();
+  auto raster_queue = task_queue->CreateTaskQueue();
+
+  std::vector<fml::TimePoint> wakes;
+
+  task_queue->SetWakeable(platform_queue,
+                          new TestWakeable([&wakes](fml::TimePoint wake_time) {
+                            wakes.push_back(wake_time);
+                          }));
+
+  task_queue->SetWakeable(raster_queue,
+                          new TestWakeable([](fml::TimePoint wake_time) {
+                            // The raster queue is owned by the platform queue.
+                            ASSERT_FALSE(true);
+                          }));
+
+  auto time1 = fml::TimePoint::Now() + fml::TimeDelta::FromMilliseconds(1);
+  auto time2 = fml::TimePoint::Now() + fml::TimeDelta::FromMilliseconds(2);
+
+  ASSERT_EQ(0UL, wakes.size());
+
+  task_queue->RegisterTask(
+      platform_queue, []() {}, time1);
+
+  ASSERT_EQ(1UL, wakes.size());
+  ASSERT_EQ(time1, wakes[0]);
+
+  task_queue->Merge(platform_queue, raster_queue);
+
+  task_queue->RegisterTask(
+      raster_queue, []() {}, time2);
+
+  ASSERT_EQ(3UL, wakes.size());
+  ASSERT_EQ(time1, wakes[1]);
+  ASSERT_EQ(time1, wakes[2]);
+}
+
+}  // namespace testing
+}  // namespace fml

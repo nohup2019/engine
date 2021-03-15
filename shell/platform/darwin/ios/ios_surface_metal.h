@@ -6,68 +6,48 @@
 #define FLUTTER_SHELL_PLATFORM_DARWIN_IOS_IOS_SURFACE_METAL_H_
 
 #include "flutter/fml/macros.h"
-#include "flutter/fml/platform/darwin/scoped_nsobject.h"
-#include "flutter/shell/gpu/gpu_surface_delegate.h"
-#include "flutter/shell/gpu/gpu_surface_metal.h"
-#include "flutter/shell/platform/darwin/ios/ios_surface.h"
+#include "flutter/shell/gpu/gpu_surface_metal_delegate.h"
+#import "flutter/shell/platform/darwin/ios/ios_surface.h"
+#include "third_party/skia/include/gpu/mtl/GrMtlTypes.h"
 
 @class CAMetalLayer;
 
 namespace flutter {
 
-class IOSSurfaceMetal final : public IOSSurface,
-                              public GPUSurfaceDelegate,
-                              public ExternalViewEmbedder {
+class SK_API_AVAILABLE_CA_METAL_LAYER IOSSurfaceMetal final : public IOSSurface,
+                                                              public GPUSurfaceMetalDelegate {
  public:
-  IOSSurfaceMetal(fml::scoped_nsobject<CAMetalLayer> layer,
-                  FlutterPlatformViewsController* platform_views_controller);
+  IOSSurfaceMetal(fml::scoped_nsobject<CAMetalLayer> layer, std::shared_ptr<IOSContext> context);
 
-  IOSSurfaceMetal(fml::scoped_nsobject<CAMetalLayer> layer);
+  // |IOSSurface|
+  ~IOSSurfaceMetal();
 
-  ~IOSSurfaceMetal() override;
+ private:
+  fml::scoped_nsobject<CAMetalLayer> layer_;
+  id<MTLDevice> device_;
+  id<MTLCommandQueue> command_queue_;
+  bool is_valid_ = false;
 
   // |IOSSurface|
   bool IsValid() const override;
 
   // |IOSSurface|
-  bool ResourceContextMakeCurrent() override;
-
-  // |IOSSurface|
   void UpdateStorageSizeIfNecessary() override;
 
   // |IOSSurface|
-  std::unique_ptr<Surface> CreateGPUSurface(GrContext* gr_context = nullptr) override;
+  std::unique_ptr<Surface> CreateGPUSurface(GrDirectContext* gr_context) override;
 
-  // |GPUSurfaceDelegate|
-  flutter::ExternalViewEmbedder* GetExternalViewEmbedder() override;
+  // |GPUSurfaceMetalDelegate|
+  GPUCAMetalLayerHandle GetCAMetalLayer(const SkISize& frame_info) const override;
 
-  // |ExternalViewEmbedder|
-  sk_sp<SkSurface> GetRootSurface() override;
+  // |GPUSurfaceMetalDelegate|
+  bool PresentDrawable(GrMTLHandle drawable) const override;
 
-  // |ExternalViewEmbedder|
-  void CancelFrame() override;
+  // |GPUSurfaceMetalDelegate|
+  GPUMTLTextureInfo GetMTLTexture(const SkISize& frame_info) const override;
 
-  // |ExternalViewEmbedder|
-  void BeginFrame(SkISize frame_size, GrContext* context, double device_pixel_ratio) override;
-
-  // |ExternalViewEmbedder|
-  void PrerollCompositeEmbeddedView(int view_id,
-                                    std::unique_ptr<flutter::EmbeddedViewParams> params) override;
-
-  // |ExternalViewEmbedder|
-  PostPrerollResult PostPrerollAction(fml::RefPtr<fml::GpuThreadMerger> gpu_thread_merger) override;
-
-  // |ExternalViewEmbedder|
-  std::vector<SkCanvas*> GetCurrentCanvases() override;
-
-  // |ExternalViewEmbedder|
-  SkCanvas* CompositeEmbeddedView(int view_id) override;
-
-  // |ExternalViewEmbedder|
-  bool SubmitFrame(GrContext* context) override;
-
- private:
-  fml::scoped_nsobject<CAMetalLayer> layer_;
+  // |GPUSurfaceMetalDelegate|
+  bool PresentTexture(GPUMTLTextureInfo texture) const override;
 
   FML_DISALLOW_COPY_AND_ASSIGN(IOSSurfaceMetal);
 };

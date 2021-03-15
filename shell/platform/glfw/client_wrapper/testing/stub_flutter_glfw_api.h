@@ -68,6 +68,10 @@ class StubFlutterGlfwApi {
   // Called for FlutterDesktopWindowSetPixelRatioOverride.
   virtual void SetPixelRatioOverride(double pixel_ratio) {}
 
+  // Called for FlutterDesktopWindowSetSizeLimits.
+  virtual void SetSizeLimits(FlutterDesktopSize minimum_size,
+                             FlutterDesktopSize maximum_size) {}
+
   // Called for FlutterDesktopRunWindowEventLoopWithTimeout.
   virtual bool RunWindowEventLoopWithTimeout(uint32_t millisecond_timeout) {
     return true;
@@ -79,8 +83,14 @@ class StubFlutterGlfwApi {
     return nullptr;
   }
 
+  // Called for FlutterDesktopRunEngineEventLoopWithTimeout.
+  virtual void RunEngineEventLoopWithTimeout(uint32_t millisecond_timeout) {}
+
   // Called for FlutterDesktopShutDownEngine.
   virtual bool ShutDownEngine() { return true; }
+
+  // Called for FlutterDesktopPluginRegistrarEnableInputBlocking.
+  virtual void PluginRegistrarEnableInputBlocking(const char* channel) {}
 };
 
 // A test helper that owns a stub implementation, making it the test stub for

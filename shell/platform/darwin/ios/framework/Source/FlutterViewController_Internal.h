@@ -5,20 +5,33 @@
 #ifndef FLUTTER_SHELL_PLATFORM_DARWIN_IOS_FRAMEWORK_SOURCE_FLUTTERVIEWCONTROLLER_INTERNAL_H_
 #define FLUTTER_SHELL_PLATFORM_DARWIN_IOS_FRAMEWORK_SOURCE_FLUTTERVIEWCONTROLLER_INTERNAL_H_
 
-#include "flutter/flow/embedded_views.h"
 #include "flutter/fml/memory/weak_ptr.h"
-#include "flutter/fml/platform/darwin/scoped_nsobject.h"
-#include "flutter/shell/common/shell.h"
-#include "flutter/shell/platform/darwin/ios/framework/Headers/FlutterViewController.h"
-#include "flutter/shell/platform/darwin/ios/framework/Source/FlutterPlatformViews_Internal.h"
 
-FLUTTER_EXPORT
+#import "flutter/shell/platform/darwin/ios/framework/Headers/FlutterViewController.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterRestorationPlugin.h"
+
+namespace flutter {
+class FlutterPlatformViewsController;
+}
+
+FLUTTER_DARWIN_EXPORT
 extern NSNotificationName const FlutterViewControllerWillDealloc;
+
+FLUTTER_DARWIN_EXPORT
+extern NSNotificationName const FlutterViewControllerHideHomeIndicator;
+
+FLUTTER_DARWIN_EXPORT
+extern NSNotificationName const FlutterViewControllerShowHomeIndicator;
 
 @interface FlutterViewController ()
 
+@property(nonatomic, readonly) BOOL isPresentingViewController;
 - (fml::WeakPtr<FlutterViewController>)getWeakPtr;
-- (flutter::FlutterPlatformViewsController*)platformViewsController;
+- (std::shared_ptr<flutter::FlutterPlatformViewsController>&)platformViewsController;
+- (FlutterRestorationPlugin*)restorationPlugin;
+// Send touches to the Flutter Engine while forcing the change type to be cancelled.
+// The `phase`s in `touches` are ignored.
+- (void)forceTouchesCancelled:(NSSet*)touches;
 
 @end
 

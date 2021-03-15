@@ -2,15 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.6
 import 'package:ui/ui.dart';
 
+import 'package:test/bootstrap/browser.dart';
 import 'package:test/test.dart';
+
+void main() {
+  internalBootstrapBrowserTest(() => testMain);
+}
 
 class NotAColor extends Color {
   const NotAColor(int value) : super(value);
 }
 
-void main() {
+void testMain() {
   test('color accessors should work', () {
     const Color foo = Color(0x12345678);
     expect(foo.alpha, equals(0x12));
@@ -145,6 +151,12 @@ void main() {
     expect(color.value, 0xF0E0D0C0);
     // Call base class member, make sure it uses overridden value.
     expect(color.red, 0xE0);
+  });
+
+  test('Paint converts Color subclasses to plain Color', () {
+    final DynamicColorClass color = DynamicColorClass(0xF0E0D0C0);
+    final Paint paint = Paint()..color = color;
+    expect(paint.color.runtimeType, Color);
   });
 }
 

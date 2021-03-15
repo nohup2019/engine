@@ -9,19 +9,25 @@
 
 namespace flutter {
 
-#if defined(OS_FUCHSIA)
-// In general, traces on Fuchsia are recorded across the whole system.
-// Because of this, emitting a "VSYNC" event per flutter process is
-// undesirable, as the events will collide with each other.  We
-// instead let another area of the system emit them.
-static constexpr const char* kVsyncTraceName = "vsync callback";
-#else   // defined(OS_FUCHSIA)
-// Note: The tag name must be "VSYNC" (it is special) so that the
-// "Highlight Vsync" checkbox in the timeline can be enabled.
-static constexpr const char* kVsyncTraceName = "VSYNC";
-#endif  // defined(OS_FUCHSIA)
-
 static constexpr const char* kVsyncFlowName = "VsyncFlow";
+
+#if defined(OS_FUCHSIA)
+//  ________  _________  ________  ________
+// |\   ____\|\___   ___\\   __  \|\   __  \
+// \ \  \___|\|___ \  \_\ \  \|\  \ \  \|\  \
+//  \ \_____  \   \ \  \ \ \  \\\  \ \   ____\
+//   \|____|\  \   \ \  \ \ \  \\\  \ \  \___|
+//     ____\_\  \   \ \__\ \ \_______\ \__\
+//    |\_________\   \|__|  \|_______|\|__|
+//    \|_________|
+//
+// Fuchsia benchmarks depend on this trace event's name.  Please do not change
+// it without checking that the changes are compatible with Fuchsia benchmarks
+// first!
+static constexpr const char* kVsyncTraceName = "vsync callback";
+#else
+static constexpr const char* kVsyncTraceName = "VsyncProcessCallback";
+#endif
 
 VsyncWaiter::VsyncWaiter(TaskRunners task_runners)
     : task_runners_(std::move(task_runners)) {}
@@ -29,7 +35,7 @@ VsyncWaiter::VsyncWaiter(TaskRunners task_runners)
 VsyncWaiter::~VsyncWaiter() = default;
 
 // Public method invoked by the animator.
-void VsyncWaiter::AsyncWaitForVsync(Callback callback) {
+void VsyncWaiter::AsyncWaitForVsync(const Callback& callback) {
   if (!callback) {
     return;
   }
@@ -46,7 +52,7 @@ void VsyncWaiter::AsyncWaitForVsync(Callback callback) {
       return;
     }
     callback_ = std::move(callback);
-    if (secondary_callback_) {
+    if (!secondary_callbacks_.empty()) {
       // Return directly as `AwaitVSync` is already called by
       // `ScheduleSecondaryCallback`.
       return;
@@ -55,7 +61,8 @@ void VsyncWaiter::AsyncWaitForVsync(Callback callback) {
   AwaitVSync();
 }
 
-void VsyncWaiter::ScheduleSecondaryCallback(fml::closure callback) {
+void VsyncWaiter::ScheduleSecondaryCallback(uintptr_t id,
+                                            const fml::closure& callback) {
   FML_DCHECK(task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread());
 
   if (!callback) {
@@ -66,13 +73,13 @@ void VsyncWaiter::ScheduleSecondaryCallback(fml::closure callback) {
 
   {
     std::scoped_lock lock(callback_mutex_);
-    if (secondary_callback_) {
+    auto [_, inserted] = secondary_callbacks_.emplace(id, std::move(callback));
+    if (!inserted) {
       // Multiple schedules must result in a single callback per frame interval.
       TRACE_EVENT_INSTANT0("flutter",
                            "MultipleCallsToSecondaryVsyncInFrameInterval");
       return;
     }
-    secondary_callback_ = std::move(callback);
     if (callback_) {
       // Return directly as `AwaitVSync` is already called by
       // `AsyncWaitForVsync`.
@@ -85,15 +92,18 @@ void VsyncWaiter::ScheduleSecondaryCallback(fml::closure callback) {
 void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
                                fml::TimePoint frame_target_time) {
   Callback callback;
-  fml::closure secondary_callback;
+  std::vector<fml::closure> secondary_callbacks;
 
   {
     std::scoped_lock lock(callback_mutex_);
     callback = std::move(callback_);
-    secondary_callback = std::move(secondary_callback_);
+    for (auto& pair : secondary_callbacks_) {
+      secondary_callbacks.push_back(std::move(pair.second));
+    }
+    secondary_callbacks_.clear();
   }
 
-  if (!callback && !secondary_callback) {
+  if (!callback && secondary_callbacks.empty()) {
     // This means that the vsync waiter implementation fired a callback for a
     // request we did not make. This is a paranoid check but we still want to
     // make sure we catch misbehaving vsync implementations.
@@ -116,23 +126,16 @@ void VsyncWaiter::FireCallback(fml::TimePoint frame_start_time,
         [callback, flow_identifier, frame_start_time, frame_target_time]() {
           FML_TRACE_EVENT("flutter", kVsyncTraceName, "StartTime",
                           frame_start_time, "TargetTime", frame_target_time);
-          fml::tracing::TraceEventAsyncComplete(
-              "flutter", "VsyncSchedulingOverhead", fml::TimePoint::Now(),
-              frame_start_time);
           callback(frame_start_time, frame_target_time);
           TRACE_FLOW_END("flutter", kVsyncFlowName, flow_identifier);
         },
         frame_start_time);
   }
 
-  if (secondary_callback) {
+  for (auto& secondary_callback : secondary_callbacks) {
     task_runners_.GetUITaskRunner()->PostTaskForTime(
         std::move(secondary_callback), frame_start_time);
   }
-}
-
-float VsyncWaiter::GetDisplayRefreshRate() const {
-  return kUnknownRefreshRateFPS;
 }
 
 }  // namespace flutter

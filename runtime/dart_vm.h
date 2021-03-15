@@ -147,6 +147,19 @@ class DartVM {
   std::shared_ptr<fml::ConcurrentTaskRunner> GetConcurrentWorkerTaskRunner()
       const;
 
+  //----------------------------------------------------------------------------
+  /// @brief      The concurrent message loop hosts threads that are used by the
+  ///             engine to perform tasks long running background tasks.
+  ///             Typically, to post tasks to this message loop, the
+  ///             `GetConcurrentWorkerTaskRunner` method may be used.
+  ///
+  /// @see        GetConcurrentWorkerTaskRunner
+  ///
+  /// @return     The concurrent message loop used by this running Dart VM
+  ///             instance.
+  ///
+  std::shared_ptr<fml::ConcurrentMessageLoop> GetConcurrentMessageLoop();
+
  private:
   const Settings settings_;
   std::shared_ptr<fml::ConcurrentMessageLoop> concurrent_message_loop_;
@@ -160,8 +173,8 @@ class DartVM {
 
   static std::shared_ptr<DartVM> Create(
       Settings settings,
-      fml::RefPtr<DartSnapshot> vm_snapshot,
-      fml::RefPtr<DartSnapshot> isolate_snapshot,
+      fml::RefPtr<const DartSnapshot> vm_snapshot,
+      fml::RefPtr<const DartSnapshot> isolate_snapshot,
       std::shared_ptr<IsolateNameServer> isolate_name_server);
 
   DartVM(std::shared_ptr<const DartVMData> data,

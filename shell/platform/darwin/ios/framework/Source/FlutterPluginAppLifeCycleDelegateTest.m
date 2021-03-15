@@ -4,7 +4,8 @@
 
 #import <OCMock/OCMock.h>
 #import <XCTest/XCTest.h>
-#include "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
+
+#import "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/framework/Headers/FlutterPluginAppLifeCycleDelegate.h"
 
 FLUTTER_ASSERT_ARC
@@ -40,7 +41,7 @@ FLUTTER_ASSERT_ARC
   OCMVerify([plugin applicationWillEnterForeground:[UIApplication sharedApplication]]);
 }
 
-- (void)testWillResignActive {
+- (void)skip_testWillResignActive {
   FlutterPluginAppLifeCycleDelegate* delegate = [[FlutterPluginAppLifeCycleDelegate alloc] init];
   id plugin = OCMProtocolMock(@protocol(FlutterPlugin));
   [delegate addDelegate:plugin];
@@ -50,7 +51,7 @@ FLUTTER_ASSERT_ARC
   OCMVerify([plugin applicationWillResignActive:[UIApplication sharedApplication]]);
 }
 
-- (void)testDidBecomeActive {
+- (void)skip_testDidBecomeActive {
   FlutterPluginAppLifeCycleDelegate* delegate = [[FlutterPluginAppLifeCycleDelegate alloc] init];
   id plugin = OCMProtocolMock(@protocol(FlutterPlugin));
   [delegate addDelegate:plugin];

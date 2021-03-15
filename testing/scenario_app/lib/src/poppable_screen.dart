@@ -1,9 +1,11 @@
-// Copyright 2019 The Flutter Authors. All rights reserved.
+// Copyright 2013 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:convert';
+// @dart = 2.6
 import 'dart:ui';
+
+import 'package:scenario_app/src/channel_util.dart';
 
 import 'platform_echo_mixin.dart';
 import 'scenario.dart';
@@ -12,10 +14,10 @@ import 'scenario.dart';
 class PoppableScreenScenario extends Scenario with PlatformEchoMixin {
   /// Creates the PoppableScreenScenario.
   ///
-  /// The [window] parameter must not be null.
-  PoppableScreenScenario(Window window)
-      : assert(window != null),
-        super(window);
+  /// The [dispatcher] parameter must not be null.
+  PoppableScreenScenario(PlatformDispatcher dispatcher)
+      : assert(dispatcher != null),
+        super(dispatcher);
 
   // Rect for the pop button. Only defined once onMetricsChanged is called.
   Rect _buttonRect;
@@ -71,22 +73,15 @@ class PoppableScreenScenario extends Scenario with PlatformEchoMixin {
   }
 
   void _pop() {
-    window.sendPlatformMessage(
+    sendJsonMethodCall(
+      dispatcher: dispatcher,
       // 'flutter/platform' is the hardcoded name of the 'platform'
       // `SystemChannel` from the `SystemNavigator` API.
       // https://github.com/flutter/flutter/blob/master/packages/flutter/lib/src/services/system_navigator.dart.
-      'flutter/platform',
-      // This recreates a combination of OptionalMethodChannel, JSONMethodCodec,
-      // and _DefaultBinaryMessenger in the framework.
-      utf8.encoder.convert(
-        const JsonCodec().encode(<String, dynamic>{
-          'method': 'SystemNavigator.pop',
-          'args': null,
-        })
-      ).buffer.asByteData(),
+      channel: 'flutter/platform',
+      method: 'SystemNavigator.pop',
       // Don't care about the response. If it doesn't go through, the test
       // will fail.
-      null,
     );
   }
 }

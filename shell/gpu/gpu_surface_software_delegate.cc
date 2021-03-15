@@ -2,12 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "gpu_surface_software_delegate.h"
+#include "flutter/shell/gpu/gpu_surface_software_delegate.h"
 
 namespace flutter {
 
-ExternalViewEmbedder* GPUSurfaceSoftwareDelegate::GetExternalViewEmbedder() {
-  return nullptr;
-}
+GPUSurfaceSoftwareDelegate::~GPUSurfaceSoftwareDelegate() = default;
 
 }  // namespace flutter

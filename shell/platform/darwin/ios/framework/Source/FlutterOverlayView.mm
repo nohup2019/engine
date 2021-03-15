@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/darwin/ios/framework/Source/FlutterOverlayView.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterOverlayView.h"
 
 #include "flutter/common/settings.h"
 #include "flutter/common/task_runners.h"
@@ -12,12 +12,9 @@
 #include "flutter/fml/trace_event.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
-#include "flutter/shell/platform/darwin/ios/framework/Source/FlutterView.h"
-#include "flutter/shell/platform/darwin/ios/ios_surface_gl.h"
-#if FLUTTER_SHELL_ENABLE_METAL
-#include "flutter/shell/platform/darwin/ios/ios_surface_metal.h"
-#endif
-#include "flutter/shell/platform/darwin/ios/ios_surface_software.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterView.h"
+#import "flutter/shell/platform/darwin/ios/ios_surface_gl.h"
+#import "flutter/shell/platform/darwin/ios/ios_surface_software.h"
 #include "third_party/skia/include/utils/mac/SkCGUtils.h"
 
 // This is mostly a duplication of FlutterView.
@@ -42,6 +39,7 @@
   if (self) {
     self.layer.opaque = NO;
     self.userInteractionEnabled = NO;
+    self.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
   }
 
   return self;
@@ -50,18 +48,11 @@
 - (instancetype)initWithContentsScale:(CGFloat)contentsScale {
   self = [self init];
 
-  if ([self.layer isKindOfClass:[CAEAGLLayer class]]) {
-    CAEAGLLayer* layer = reinterpret_cast<CAEAGLLayer*>(self.layer);
-    layer.allowsGroupOpacity = NO;
-    layer.contentsScale = contentsScale;
-    layer.rasterizationScale = contentsScale;
-#if FLUTTER_SHELL_ENABLE_METAL
-  } else if ([self.layer isKindOfClass:[CAMetalLayer class]]) {
-    CAMetalLayer* layer = reinterpret_cast<CAMetalLayer*>(self.layer);
-    layer.allowsGroupOpacity = NO;
-    layer.contentsScale = contentsScale;
-    layer.rasterizationScale = contentsScale;
-#endif  // FLUTTER_SHELL_ENABLE_METAL
+  if ([self.layer isKindOfClass:NSClassFromString(@"CAEAGLLayer")] ||
+      [self.layer isKindOfClass:NSClassFromString(@"CAMetalLayer")]) {
+    self.layer.allowsGroupOpacity = NO;
+    self.layer.contentsScale = contentsScale;
+    self.layer.rasterizationScale = contentsScale;
   }
 
   return self;
@@ -69,30 +60,6 @@
 
 + (Class)layerClass {
   return [FlutterView layerClass];
-}
-
-- (std::unique_ptr<flutter::IOSSurface>)createSurface:
-    (std::shared_ptr<flutter::IOSGLContext>)gl_context {
-  if ([self.layer isKindOfClass:[CAEAGLLayer class]]) {
-    fml::scoped_nsobject<CAEAGLLayer> eagl_layer(
-        reinterpret_cast<CAEAGLLayer*>([self.layer retain]));
-    if (@available(iOS 9.0, *)) {
-      eagl_layer.get().presentsWithTransaction = YES;
-    }
-    return std::make_unique<flutter::IOSSurfaceGL>(std::move(eagl_layer), gl_context);
-#if FLUTTER_SHELL_ENABLE_METAL
-  } else if ([self.layer isKindOfClass:[CAMetalLayer class]]) {
-    fml::scoped_nsobject<CAMetalLayer> metalLayer(
-        reinterpret_cast<CAMetalLayer*>([self.layer retain]));
-    if (@available(iOS 8.0, *)) {
-      metalLayer.get().presentsWithTransaction = YES;
-    }
-    return std::make_unique<flutter::IOSSurfaceMetal>(std::move(metalLayer));
-#endif  //  FLUTTER_SHELL_ENABLE_METAL
-  } else {
-    fml::scoped_nsobject<CALayer> layer(reinterpret_cast<CALayer*>([self.layer retain]));
-    return std::make_unique<flutter::IOSSurfaceSoftware>(std::move(layer), nullptr);
-  }
 }
 
 // TODO(amirh): implement drawLayer to support snapshotting.

@@ -2,44 +2,172 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.12
 part of engine;
 
 /// When set to true, all platform messages will be printed to the console.
-const bool _debugPrintPlatformMessages = false;
+const bool/*!*/ _debugPrintPlatformMessages = false;
 
-/// The Web implementation of [ui.Window].
-class EngineWindow extends ui.Window {
-  EngineWindow() {
-    _addBrightnessMediaQueryListener();
+/// Whether [_customUrlStrategy] has been set or not.
+///
+/// It is valid to set [_customUrlStrategy] to null, so we can't use a null
+/// check to determine whether it was set or not. We need an extra boolean.
+bool _isUrlStrategySet = false;
+
+/// A custom URL strategy set by the app before running.
+UrlStrategy? _customUrlStrategy;
+set customUrlStrategy(UrlStrategy? strategy) {
+  assert(!_isUrlStrategySet, 'Cannot set URL strategy more than once.');
+  _isUrlStrategySet = true;
+  _customUrlStrategy = strategy;
+}
+
+/// The Web implementation of [ui.SingletonFlutterWindow].
+class EngineFlutterWindow extends ui.SingletonFlutterWindow {
+  EngineFlutterWindow(this._windowId, this.platformDispatcher) {
+    final EnginePlatformDispatcher engineDispatcher = platformDispatcher as EnginePlatformDispatcher;
+    engineDispatcher._windows[_windowId] = this;
+    engineDispatcher._windowConfigurations[_windowId] = ui.ViewConfiguration();
+    if (_isUrlStrategySet) {
+      _browserHistory =
+          MultiEntriesBrowserHistory(urlStrategy: _customUrlStrategy);
+    }
+    registerHotRestartListener(() {
+      window.resetHistory();
+    });
+  }
+
+  final Object _windowId;
+  final ui.PlatformDispatcher platformDispatcher;
+
+  /// Handles the browser history integration to allow users to use the back
+  /// button, etc.
+  @visibleForTesting
+  BrowserHistory get browserHistory {
+    return _browserHistory ??=
+        MultiEntriesBrowserHistory(urlStrategy: _urlStrategyForInitialization);
+  }
+
+  UrlStrategy? get _urlStrategyForInitialization {
+    final UrlStrategy? urlStrategy = _isUrlStrategySet
+        ? _customUrlStrategy
+        : _createDefaultUrlStrategy();
+    // Prevent any further customization of URL strategy.
+    _isUrlStrategySet = true;
+    return urlStrategy;
+  }
+
+  BrowserHistory? _browserHistory;
+  bool _usingRouter = false;
+  Future<void> _useSingleEntryBrowserHistory() async {
+    if (_browserHistory is SingleEntryBrowserHistory) {
+      return;
+    }
+
+    final UrlStrategy? strategy;
+    if (_browserHistory == null) {
+      strategy = _urlStrategyForInitialization;
+    } else {
+      strategy = _browserHistory?.urlStrategy;
+      await _browserHistory?.tearDown();
+    }
+    _browserHistory = SingleEntryBrowserHistory(urlStrategy: strategy);
+  }
+
+  Future<void> _useMultiEntryBrowserHistory() async {
+    if (_browserHistory is MultiEntriesBrowserHistory) {
+      return;
+    }
+
+    final UrlStrategy? strategy;
+    if (_browserHistory == null) {
+      strategy = _urlStrategyForInitialization;
+    } else {
+      strategy = _browserHistory?.urlStrategy;
+      await _browserHistory?.tearDown();
+    }
+    _browserHistory = MultiEntriesBrowserHistory(urlStrategy: strategy);
+  }
+
+  @visibleForTesting
+  Future<void> debugInitializeHistory(
+    UrlStrategy? strategy, {
+    required bool useSingle,
+  }) async {
+    // Prevent any further customization of URL strategy.
+    _isUrlStrategySet = true;
+    _usingRouter = false;
+    await _browserHistory?.tearDown();
+    if (useSingle) {
+      _browserHistory = SingleEntryBrowserHistory(urlStrategy: strategy);
+    } else {
+      _browserHistory = MultiEntriesBrowserHistory(urlStrategy: strategy);
+    }
+  }
+
+  Future<void> resetHistory() async {
+    await _browserHistory?.tearDown();
+    _browserHistory = null;
+    // Reset the globals too.
+    _usingRouter = false;
+    _isUrlStrategySet = false;
+    _customUrlStrategy = null;
+  }
+
+  Future<bool> handleNavigationMessage(
+      ByteData? data,
+      ) async {
+    final MethodCall decoded = JSONMethodCodec().decodeMethodCall(data);
+    final Map<String, dynamic> arguments = decoded.arguments;
+
+    switch (decoded.method) {
+      case 'routeUpdated':
+        if (!_usingRouter) {
+          await _useSingleEntryBrowserHistory();
+          browserHistory.setRouteName(arguments['routeName']);
+        } else {
+          assert(
+            false,
+            'Receives old navigator update in a router application. '
+            'This can happen if you use non-router versions of MaterialApp/'
+            'CupertinoApp/WidgetsApp together with the router versions of them.'
+          );
+          return false;
+        }
+        return true;
+      case 'routeInformationUpdated':
+        await _useMultiEntryBrowserHistory();
+        _usingRouter = true;
+        browserHistory.setRouteName(
+          arguments['location'],
+          state: arguments['state'],
+        );
+        return true;
+    }
+    return false;
   }
 
   @override
-  double get devicePixelRatio {
-    if (_debugDevicePixelRatio != null) {
-      return _debugDevicePixelRatio;
-    }
-
-    if (experimentalUseSkia) {
-      return html.window.devicePixelRatio;
-    } else {
-      return 1.0;
-    }
+  ui.ViewConfiguration get viewConfiguration {
+    final EnginePlatformDispatcher engineDispatcher = platformDispatcher as EnginePlatformDispatcher;
+    assert(engineDispatcher._windowConfigurations.containsKey(_windowId));
+    return engineDispatcher._windowConfigurations[_windowId] ?? ui.ViewConfiguration();
   }
-
-  /// Overrides the default device pixel ratio.
-  ///
-  /// This is useful in tests to emulate screens of different dimensions.
-  void debugOverrideDevicePixelRatio(double value) {
-    assert(() {
-      _debugDevicePixelRatio = value;
-      return true;
-    }());
-  }
-
-  double _debugDevicePixelRatio;
 
   @override
   ui.Size get physicalSize {
+    if (_physicalSize == null) {
+      _computePhysicalSize();
+    }
+    assert(_physicalSize != null);
+    return _physicalSize!;
+  }
+
+  /// Computes the physical size of the screen from [html.window].
+  ///
+  /// This function is expensive. It triggers browser layout if there are
+  /// pending DOM writes.
+  void _computePhysicalSize() {
     bool override = false;
 
     assert(() {
@@ -51,233 +179,139 @@ class EngineWindow extends ui.Window {
     }());
 
     if (!override) {
-      final double windowInnerWidth = html.window.innerWidth * devicePixelRatio;
-      final double windowInnerHeight =
-          html.window.innerHeight * devicePixelRatio;
-      if (windowInnerWidth != _lastKnownWindowInnerWidth ||
-          windowInnerHeight != _lastKnownWindowInnerHeight) {
-        _lastKnownWindowInnerWidth = windowInnerWidth;
-        _lastKnownWindowInnerHeight = windowInnerHeight;
-        _physicalSize = ui.Size(
-          windowInnerWidth,
-          windowInnerHeight,
-        );
+      double windowInnerWidth;
+      double windowInnerHeight;
+      final html.VisualViewport? viewport = html.window.visualViewport;
+      if (viewport != null) {
+        windowInnerWidth = viewport.width!.toDouble() * devicePixelRatio;
+        windowInnerHeight = viewport.height!.toDouble() * devicePixelRatio;
+      } else {
+        windowInnerWidth = html.window.innerWidth! * devicePixelRatio;
+        windowInnerHeight = html.window.innerHeight! * devicePixelRatio;
+      }
+      _physicalSize = ui.Size(
+        windowInnerWidth,
+        windowInnerHeight,
+      );
+    }
+  }
+
+  void computeOnScreenKeyboardInsets() {
+    double windowInnerHeight;
+    final html.VisualViewport? viewport = html.window.visualViewport;
+    if (viewport != null) {
+      windowInnerHeight = viewport.height!.toDouble() * devicePixelRatio;
+    } else {
+      windowInnerHeight = html.window.innerHeight! * devicePixelRatio;
+    }
+    final double bottomPadding = _physicalSize!.height - windowInnerHeight;
+    _viewInsets =
+        WindowPadding(bottom: bottomPadding, left: 0, right: 0, top: 0);
+  }
+
+  /// Uses the previous physical size and current innerHeight/innerWidth
+  /// values to decide if a device is rotating.
+  ///
+  /// During a rotation the height and width values will (almost) swap place.
+  /// Values can slightly differ due to space occupied by the browser header.
+  /// For example the following values are collected for Pixel 3 rotation:
+  ///
+  /// height: 658 width: 393
+  /// new height: 313 new width: 738
+  ///
+  /// The following values are from a changed caused by virtual keyboard.
+  ///
+  /// height: 658 width: 393
+  /// height: 368 width: 393
+  bool isRotation() {
+    double height = 0;
+    double width = 0;
+    if (html.window.visualViewport != null) {
+      height =
+          html.window.visualViewport!.height!.toDouble() * devicePixelRatio;
+      width = html.window.visualViewport!.width!.toDouble() * devicePixelRatio;
+    } else {
+      height = html.window.innerHeight! * devicePixelRatio;
+      width = html.window.innerWidth! * devicePixelRatio;
+    }
+
+    // This method compares the new dimensions with the previous ones.
+    // Return false if the previous dimensions are not set.
+    if (_physicalSize != null) {
+      // First confirm both height and width are effected.
+      if (_physicalSize!.height != height && _physicalSize!.width != width) {
+        // If prior to rotation height is bigger than width it should be the
+        // opposite after the rotation and vice versa.
+        if ((_physicalSize!.height > _physicalSize!.width && height < width) ||
+            (_physicalSize!.width > _physicalSize!.height && width < height)) {
+          // Rotation detected
+          return true;
+        }
       }
     }
-
-    return _physicalSize;
+    return false;
   }
 
-  ui.Size _physicalSize = ui.Size.zero;
-  double _lastKnownWindowInnerWidth = -1;
-  double _lastKnownWindowInnerHeight = -1;
+  @override
+  WindowPadding get viewInsets => _viewInsets;
+  WindowPadding _viewInsets = ui.WindowPadding.zero as WindowPadding;
+
+  /// Lazily populated and cleared at the end of the frame.
+  ui.Size? _physicalSize;
 
   /// Overrides the value of [physicalSize] in tests.
-  ui.Size webOnlyDebugPhysicalSizeOverride;
+  ui.Size? webOnlyDebugPhysicalSizeOverride;
+}
+
+typedef _JsSetUrlStrategy = void Function(JsUrlStrategy?);
+
+/// A JavaScript hook to customize the URL strategy of a Flutter app.
+//
+// Keep this js name in sync with flutter_web_plugins. Find it at:
+// https://github.com/flutter/flutter/blob/custom_location_strategy/packages/flutter_web_plugins/lib/src/navigation/js_url_strategy.dart
+//
+// TODO: Add integration test https://github.com/flutter/flutter/issues/66852
+@JS('_flutter_web_set_location_strategy')
+// ignore: unused_element
+external set _jsSetUrlStrategy(_JsSetUrlStrategy? newJsSetUrlStrategy);
+
+UrlStrategy? _createDefaultUrlStrategy() {
+  return ui.debugEmulateFlutterTesterEnvironment
+      ? TestUrlStrategy.fromEntry(TestHistoryEntry('default', null, '/'))
+      : const HashUrlStrategy();
+}
+
+/// The Web implementation of [ui.SingletonFlutterWindow].
+class EngineSingletonFlutterWindow extends EngineFlutterWindow {
+  EngineSingletonFlutterWindow(Object windowId, ui.PlatformDispatcher platformDispatcher) : super(windowId, platformDispatcher);
 
   @override
-  double get physicalDepth => double.maxFinite;
+  double get devicePixelRatio => _debugDevicePixelRatio ?? EnginePlatformDispatcher.browserDevicePixelRatio;
 
-  /// Handles the browser history integration to allow users to use the back
-  /// button, etc.
-  final BrowserHistory _browserHistory = BrowserHistory();
-
-  /// Simulates clicking the browser's back button.
-  Future<void> webOnlyBack() => _browserHistory.back();
-
-  @override
-  String get defaultRouteName => _browserHistory.currentPath;
-
-  /// Change the strategy to use for handling browser history location.
-  /// Setting this member will automatically update [_browserHistory].
+  /// Overrides the default device pixel ratio.
   ///
-  /// By setting this to null, the browser history will be disabled.
-  set locationStrategy(LocationStrategy strategy) {
-    _browserHistory.locationStrategy = strategy;
+  /// This is useful in tests to emulate screens of different dimensions.
+  void debugOverrideDevicePixelRatio(double value) {
+    _debugDevicePixelRatio = value;
   }
+
+  double? _debugDevicePixelRatio;
+}
+
+/// A type of [FlutterView] that can be hosted inside of a [FlutterWindow].
+class EngineFlutterWindowView extends ui.FlutterWindow {
+  EngineFlutterWindowView._(this._viewId, this.platformDispatcher);
+
+  final Object _viewId;
+
+  final ui.PlatformDispatcher platformDispatcher;
 
   @override
-  void sendPlatformMessage(
-    String name,
-    ByteData data,
-    ui.PlatformMessageResponseCallback callback,
-  ) {
-    // In widget tests we want to bypass processing of platform messages.
-    if (assertionsEnabled && ui.debugEmulateFlutterTesterEnvironment) {
-      return;
-    }
-    if (_debugPrintPlatformMessages) {
-      print('Sent platform message on channel: "$name"');
-    }
-    switch (name) {
-      case 'flutter/assets':
-        assert(ui.webOnlyAssetManager != null);
-        final String url = utf8.decode(data.buffer.asUint8List());
-        ui.webOnlyAssetManager.load(url).then((ByteData assetData) {
-          _replyToPlatformMessage(callback, assetData);
-        }, onError: (dynamic error) {
-          html.window.console
-              .warn('Error while trying to load an asset: $error');
-          _replyToPlatformMessage(callback, null);
-        });
-        return;
-
-      case 'flutter/platform':
-        const MethodCodec codec = JSONMethodCodec();
-        final MethodCall decoded = codec.decodeMethodCall(data);
-        switch (decoded.method) {
-          case 'SystemNavigator.pop':
-            _browserHistory.exit().then((_) {
-              _replyToPlatformMessage(
-                  callback, codec.encodeSuccessEnvelope(true));
-            });
-            return;
-          case 'HapticFeedback.vibrate':
-            final String type = decoded.arguments;
-            domRenderer.vibrate(_getHapticFeedbackDuration(type));
-            return;
-          case 'SystemChrome.setApplicationSwitcherDescription':
-            final Map<String, dynamic> arguments = decoded.arguments;
-            domRenderer.setTitle(arguments['label']);
-            domRenderer.setThemeColor(ui.Color(arguments['primaryColor']));
-            return;
-        }
-        break;
-
-      case 'flutter/textinput':
-        textEditing.handleTextInput(data);
-        return;
-
-      case 'flutter/platform_views':
-        handlePlatformViewCall(data, callback);
-        return;
-
-      case 'flutter/accessibility':
-        // In widget tests we want to bypass processing of platform messages.
-        accessibilityAnnouncements.handleMessage(data);
-        return;
-
-      case 'flutter/navigation':
-        const MethodCodec codec = JSONMethodCodec();
-        final MethodCall decoded = codec.decodeMethodCall(data);
-        final Map<String, dynamic> message = decoded.arguments;
-        switch (decoded.method) {
-          case 'routePushed':
-          case 'routeReplaced':
-            _browserHistory.setRouteName(message['routeName']);
-            break;
-          case 'routePopped':
-            _browserHistory.setRouteName(message['previousRouteName']);
-            break;
-        }
-        return;
-    }
-
-    if (pluginMessageCallHandler != null) {
-      pluginMessageCallHandler(name, data, callback);
-      return;
-    }
-
-    // TODO(flutter_web): Some Flutter widgets send platform messages that we
-    // don't handle on web. So for now, let's just ignore them. In the future,
-    // we should consider uncommenting the following "callback(null)" line.
-
-    // Passing [null] to [callback] indicates that the platform message isn't
-    // implemented. Look at [MethodChannel.invokeMethod] to see how [null] is
-    // handled.
-    // callback(null);
+  ui.ViewConfiguration get viewConfiguration {
+    final EnginePlatformDispatcher engineDispatcher = platformDispatcher as EnginePlatformDispatcher;
+    assert(engineDispatcher._windowConfigurations.containsKey(_viewId));
+    return engineDispatcher._windowConfigurations[_viewId] ?? ui.ViewConfiguration();
   }
-
-  int _getHapticFeedbackDuration(String type) {
-    switch (type) {
-      case 'HapticFeedbackType.lightImpact':
-        return DomRenderer.vibrateLightImpact;
-      case 'HapticFeedbackType.mediumImpact':
-        return DomRenderer.vibrateMediumImpact;
-      case 'HapticFeedbackType.heavyImpact':
-        return DomRenderer.vibrateHeavyImpact;
-      case 'HapticFeedbackType.selectionClick':
-        return DomRenderer.vibrateSelectionClick;
-      default:
-        return DomRenderer.vibrateLongPress;
-    }
-  }
-
-  /// In Flutter, platform messages are exchanged between threads so the
-  /// messages and responses have to be exchanged asynchronously. We simulate
-  /// that by adding a zero-length delay to the reply.
-  void _replyToPlatformMessage(
-    ui.PlatformMessageResponseCallback callback,
-    ByteData data,
-  ) {
-    Future<void>.delayed(Duration.zero).then((_) {
-      callback(data);
-    });
-  }
-
-  @override
-  ui.Brightness get platformBrightness => _platformBrightness;
-  ui.Brightness _platformBrightness = ui.Brightness.light;
-
-  /// Updates [_platformBrightness] and invokes [onPlatformBrightnessChanged]
-  /// callback if [_platformBrightness] changed.
-  void _updatePlatformBrightness(ui.Brightness newPlatformBrightness) {
-    ui.Brightness previousPlatformBrightness = _platformBrightness;
-    _platformBrightness = newPlatformBrightness;
-
-    if (previousPlatformBrightness != _platformBrightness &&
-        onPlatformBrightnessChanged != null) onPlatformBrightnessChanged();
-  }
-
-  /// Reference to css media query that indicates the user theme preference on the web.
-  final html.MediaQueryList _brightnessMediaQuery =
-      html.window.matchMedia('(prefers-color-scheme: dark)');
-
-  /// A callback that is invoked whenever [_brightnessMediaQuery] changes value.
-  ///
-  /// Updates the [_platformBrightness] with the new user preference.
-  html.EventListener _brightnessMediaQueryListener;
-
-  /// Set the callback function for listening changes in [_brightnessMediaQuery] value.
-  void _addBrightnessMediaQueryListener() {
-    _updatePlatformBrightness(_brightnessMediaQuery.matches
-        ? ui.Brightness.dark
-        : ui.Brightness.light);
-
-    _brightnessMediaQueryListener = (html.Event event) {
-      final html.MediaQueryListEvent mqEvent = event;
-      _updatePlatformBrightness(
-          mqEvent.matches ? ui.Brightness.dark : ui.Brightness.light);
-    };
-    _brightnessMediaQuery.addListener(_brightnessMediaQueryListener);
-    registerHotRestartListener(() {
-      _removeBrightnessMediaQueryListener();
-    });
-  }
-
-  /// Remove the callback function for listening changes in [_brightnessMediaQuery] value.
-  void _removeBrightnessMediaQueryListener() {
-    _brightnessMediaQuery.removeListener(_brightnessMediaQueryListener);
-    _brightnessMediaQueryListener = null;
-  }
-
-  @override
-  void render(ui.Scene scene) {
-    if (experimentalUseSkia) {
-      final LayerScene layerScene = scene;
-      _rasterizer.draw(layerScene.layerTree);
-    } else {
-      final SurfaceScene surfaceScene = scene;
-      domRenderer.renderScene(surfaceScene.webOnlyRootElement);
-    }
-  }
-
-  final Rasterizer _rasterizer = experimentalUseSkia
-      ? Rasterizer(Surface((SkCanvas canvas) {
-          domRenderer.renderScene(canvas.htmlCanvas);
-          canvas.skSurface.callMethod('flush');
-        }))
-      : null;
 }
 
 /// The window singleton.
@@ -285,4 +319,19 @@ class EngineWindow extends ui.Window {
 /// `dart:ui` window delegates to this value. However, this value has a wider
 /// API surface, providing Web-specific functionality that the standard
 /// `dart:ui` version does not.
-final EngineWindow window = EngineWindow();
+final EngineSingletonFlutterWindow window = EngineSingletonFlutterWindow(0, EnginePlatformDispatcher.instance);
+
+/// The Web implementation of [ui.WindowPadding].
+class WindowPadding implements ui.WindowPadding {
+  const WindowPadding({
+    required this.left,
+    required this.top,
+    required this.right,
+    required this.bottom,
+  });
+
+  final double left;
+  final double top;
+  final double right;
+  final double bottom;
+}

@@ -7,8 +7,8 @@
 
 #include <GLFW/glfw3.h>
 
-#include "flutter/shell/platform/common/cpp/client_wrapper/include/flutter/binary_messenger.h"
-#include "flutter/shell/platform/common/cpp/client_wrapper/include/flutter/method_channel.h"
+#include "flutter/shell/platform/common/client_wrapper/include/flutter/binary_messenger.h"
+#include "flutter/shell/platform/common/client_wrapper/include/flutter/method_channel.h"
 #include "flutter/shell/platform/glfw/public/flutter_glfw.h"
 #include "rapidjson/document.h"
 
@@ -29,7 +29,7 @@ class PlatformHandler {
   // The MethodChannel used for communication with the Flutter engine.
   std::unique_ptr<flutter::MethodChannel<rapidjson::Document>> channel_;
 
-  // A reference to the GLFW window.
+  // A reference to the GLFW window, if any. Null in headless mode.
   GLFWwindow* window_;
 };
 

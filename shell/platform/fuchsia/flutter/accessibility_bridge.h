@@ -5,6 +5,10 @@
 #ifndef FLUTTER_SHELL_PLATFORM_FUCHSIA_FLUTTER_ACCESSIBILITY_BRIDGE_H_
 #define FLUTTER_SHELL_PLATFORM_FUCHSIA_FLUTTER_ACCESSIBILITY_BRIDGE_H_
 
+// Work around symbol conflicts with ICU.
+#undef TRUE
+#undef FALSE
+
 #include <fuchsia/accessibility/semantics/cpp/fidl.h>
 #include <fuchsia/sys/cpp/fidl.h>
 #include <fuchsia/ui/gfx/cpp/fidl.h>
@@ -40,6 +44,8 @@ class AccessibilityBridge
   class Delegate {
    public:
     virtual void SetSemanticsEnabled(bool enabled) = 0;
+    virtual void DispatchSemanticsAction(int32_t node_id,
+                                         flutter::SemanticsAction action) = 0;
   };
 
   // TODO(MI4-2531, FIDL-718): Remove this. We shouldn't be worried about
@@ -76,32 +82,69 @@ class AccessibilityBridge
   void SetSemanticsEnabled(bool enabled);
 
   // Adds a semantics node update to the buffer of node updates to apply.
-  void AddSemanticsNodeUpdate(const flutter::SemanticsNodeUpdates update);
+  void AddSemanticsNodeUpdate(const flutter::SemanticsNodeUpdates update,
+                              float view_pixel_ratio);
+
+  // Requests a message announcement from the accessibility TTS system.
+  void RequestAnnounce(const std::string message);
 
   // Notifies the bridge of a 'hover move' touch exploration event.
   zx_status_t OnHoverMove(double x, double y);
 
+  // |fuchsia::accessibility::semantics::SemanticListener|
+  void HitTest(
+      fuchsia::math::PointF local_point,
+      fuchsia::accessibility::semantics::SemanticListener::HitTestCallback
+          callback) override;
+
+  // |fuchsia::accessibility::semantics::SemanticListener|
+  void OnAccessibilityActionRequested(
+      uint32_t node_id,
+      fuchsia::accessibility::semantics::Action action,
+      fuchsia::accessibility::semantics::SemanticListener::
+          OnAccessibilityActionRequestedCallback callback) override;
+
  private:
+  // Holds only the fields we need for hit testing.
+  // In particular, it adds a screen_rect field to flutter::SemanticsNode.
+  struct SemanticsNode {
+    int32_t id;
+    int32_t flags;
+    bool is_focusable;
+    SkRect rect;
+    SkRect screen_rect;
+    SkM44 transform;
+    std::vector<int32_t> children_in_hit_test_order;
+  };
+
   AccessibilityBridge::Delegate& delegate_;
 
   static constexpr int32_t kRootNodeId = 0;
+  flutter::SemanticsNode root_flutter_semantics_node_;
+  float last_seen_view_pixel_ratio_ = 1.f;
   fidl::Binding<fuchsia::accessibility::semantics::SemanticListener> binding_;
   fuchsia::accessibility::semantics::SemanticsManagerPtr
       fuchsia_semantics_manager_;
   fuchsia::accessibility::semantics::SemanticTreePtr tree_ptr_;
   bool semantics_enabled_;
   // This is the cache of all nodes we've sent to Fuchsia's SemanticsManager.
-  // Assists with pruning unreachable nodes.
-  std::unordered_map<int32_t, std::vector<int32_t>> nodes_;
+  // Assists with pruning unreachable nodes and hit testing.
+  std::unordered_map<int32_t, SemanticsNode> nodes_;
+
+  fuchsia::accessibility::semantics::Node GetRootNodeUpdate(size_t& node_size);
 
   // Derives the BoundingBox of a Flutter semantics node from its
   // rect and elevation.
   fuchsia::ui::gfx::BoundingBox GetNodeLocation(
       const flutter::SemanticsNode& node) const;
 
-  // Converts a Flutter semantics node's transformation to a mat4.
+  // Gets mat4 transformation from a Flutter semantics node.
   fuchsia::ui::gfx::mat4 GetNodeTransform(
       const flutter::SemanticsNode& node) const;
+
+  // Converts a Flutter semantics node's transformation to a mat4.
+  fuchsia::ui::gfx::mat4 ConvertSkiaTransformToMat4(
+      const SkM44 transform) const;
 
   // Derives the attributes for a Fuchsia semantics node from a Flutter
   // semantics node.
@@ -112,6 +155,18 @@ class AccessibilityBridge
   // Derives the states for a Fuchsia semantics node from a Flutter semantics
   // node.
   fuchsia::accessibility::semantics::States GetNodeStates(
+      const flutter::SemanticsNode& node,
+      size_t* additional_size) const;
+
+  // Derives the set of supported actions for a Fuchsia semantics node from
+  // a Flutter semantics node.
+  std::vector<fuchsia::accessibility::semantics::Action> GetNodeActions(
+      const flutter::SemanticsNode& node,
+      size_t* additional_size) const;
+
+  // Derives the role for a Fuchsia semantics node from a Flutter
+  // semantics node.
+  fuchsia::accessibility::semantics::Role GetNodeRole(
       const flutter::SemanticsNode& node) const;
 
   // Gets the set of reachable descendants from the given node id.
@@ -123,18 +178,37 @@ class AccessibilityBridge
   // May result in a call to FuchsiaAccessibility::Commit().
   void PruneUnreachableNodes();
 
-  // |fuchsia::accessibility::semantics::SemanticListener|
-  void OnAccessibilityActionRequested(
-      uint32_t node_id,
-      fuchsia::accessibility::semantics::Action action,
-      fuchsia::accessibility::semantics::SemanticListener::
-          OnAccessibilityActionRequestedCallback callback) override;
+  // Updates the on-screen positions of accessibility elements,
+  // starting from the root element with an identity matrix.
+  //
+  // This should be called from Update.
+  void UpdateScreenRects();
 
-  // |fuchsia::accessibility::semantics::SemanticListener|
-  void HitTest(
-      fuchsia::math::PointF local_point,
-      fuchsia::accessibility::semantics::SemanticListener::HitTestCallback
-          callback) override;
+  // Updates the on-screen positions of accessibility elements, starting
+  // from node_id and using the specified transform.
+  //
+  // Update calls this via UpdateScreenRects().
+  void UpdateScreenRects(int32_t node_id,
+                         SkM44 parent_transform,
+                         std::unordered_set<int32_t>* visited_nodes);
+
+  // Traverses the semantics tree to find the node_id hit by the given x,y
+  // point.
+  //
+  // Assumes that SemanticsNode::screen_rect is up to date.
+  std::optional<int32_t> GetHitNode(int32_t node_id, float x, float y);
+
+  // Returns whether the node is considered focusable.
+  bool IsFocusable(const flutter::SemanticsNode& node) const;
+
+  // Converts a fuchsia::accessibility::semantics::Action to a
+  // flutter::SemanticsAction.
+  //
+  // The node_id parameter is used for printing warnings about unsupported
+  // action types.
+  std::optional<flutter::SemanticsAction> GetFlutterSemanticsAction(
+      fuchsia::accessibility::semantics::Action fuchsia_action,
+      uint32_t node_id);
 
   // |fuchsia::accessibility::semantics::SemanticListener|
   void OnSemanticsModeChanged(bool enabled,

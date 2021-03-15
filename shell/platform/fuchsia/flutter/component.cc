@@ -8,8 +8,11 @@
 #include <fuchsia/mem/cpp/fidl.h>
 #include <lib/async-loop/cpp/loop.h>
 #include <lib/async/cpp/task.h>
+#include <lib/async/default.h>
 #include <lib/fdio/directory.h>
+#include <lib/fdio/io.h>
 #include <lib/fdio/namespace.h>
+#include <lib/ui/scenic/cpp/view_ref_pair.h>
 #include <lib/ui/scenic/cpp/view_token_pair.h>
 #include <lib/vfs/cpp/composed_service_dir.h>
 #include <lib/vfs/cpp/remote_dir.h>
@@ -18,6 +21,7 @@
 #include <zircon/dlfcn.h>
 #include <zircon/status.h>
 #include <zircon/types.h>
+
 #include <memory>
 #include <regex>
 #include <sstream>
@@ -27,15 +31,14 @@
 #include "flutter/fml/unique_fd.h"
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/shell/common/switches.h"
-#include "lib/fdio/io.h"
 #include "runtime/dart/utils/files.h"
 #include "runtime/dart/utils/handle_exception.h"
+#include "runtime/dart/utils/mapped_resource.h"
 #include "runtime/dart/utils/tempfs.h"
 #include "runtime/dart/utils/vmo.h"
 
 #include "task_observers.h"
 #include "task_runner_adapter.h"
-#include "thread.h"
 
 // TODO(kaushikiska): Use these constants from ::llcpp::fuchsia::io
 // Can read from target object.
@@ -45,44 +48,77 @@ constexpr uint32_t OPEN_RIGHT_READABLE = 1u;
 constexpr uint32_t OPEN_RIGHT_EXECUTABLE = 8u;
 
 namespace flutter_runner {
+namespace {
 
 constexpr char kDataKey[] = "data";
+constexpr char kAssetsKey[] = "assets";
 constexpr char kTmpPath[] = "/tmp";
 constexpr char kServiceRootPath[] = "/svc";
+constexpr char kRunnerConfigPath[] = "/config/data/flutter_runner_config";
 
-ActiveApplication Application::Create(
-    TerminationCallback termination_callback,
-    fuchsia::sys::Package package,
-    fuchsia::sys::StartupInfo startup_info,
-    std::shared_ptr<sys::ServiceDirectory> runner_incoming_services,
-    fidl::InterfaceRequest<fuchsia::sys::ComponentController> controller) {
-  std::unique_ptr<Thread> thread = std::make_unique<Thread>();
-  std::unique_ptr<Application> application;
+class FileInNamespaceBuffer final : public fml::Mapping {
+ public:
+  FileInNamespaceBuffer(int namespace_fd, const char* path, bool executable)
+      : address_(nullptr), size_(0) {
+    fuchsia::mem::Buffer buffer;
+    if (!dart_utils::VmoFromFilenameAt(namespace_fd, path, executable,
+                                       &buffer)) {
+      return;
+    }
+    if (buffer.size == 0) {
+      return;
+    }
 
-  fml::AutoResetWaitableEvent latch;
-  async::PostTask(thread->dispatcher(), [&]() mutable {
-    application.reset(
-        new Application(std::move(termination_callback), std::move(package),
-                        std::move(startup_info), runner_incoming_services,
-                        std::move(controller)));
-    latch.Signal();
-  });
+    uint32_t flags = ZX_VM_PERM_READ;
+    if (executable) {
+      flags |= ZX_VM_PERM_EXECUTE;
+    }
+    uintptr_t addr;
+    zx_status_t status =
+        zx::vmar::root_self()->map(flags, 0, buffer.vmo, 0, buffer.size, &addr);
+    if (status != ZX_OK) {
+      FML_LOG(FATAL) << "Failed to map " << path << ": "
+                     << zx_status_get_string(status);
+    }
 
-  latch.Wait();
-  return {.thread = std::move(thread), .application = std::move(application)};
-}
-
-static std::string DebugLabelForURL(const std::string& url) {
-  auto found = url.rfind("/");
-  if (found == std::string::npos) {
-    return url;
-  } else {
-    return {url, found + 1};
+    address_ = reinterpret_cast<void*>(addr);
+    size_ = buffer.size;
   }
+
+  ~FileInNamespaceBuffer() {
+    if (address_ != nullptr) {
+      zx::vmar::root_self()->unmap(reinterpret_cast<uintptr_t>(address_),
+                                   size_);
+      address_ = nullptr;
+      size_ = 0;
+    }
+  }
+
+  // |fml::Mapping|
+  const uint8_t* GetMapping() const override {
+    return reinterpret_cast<const uint8_t*>(address_);
+  }
+
+  // |fml::Mapping|
+  size_t GetSize() const override { return size_; }
+
+ private:
+  void* address_;
+  size_t size_;
+
+  FML_DISALLOW_COPY_AND_ASSIGN(FileInNamespaceBuffer);
+};
+
+std::unique_ptr<fml::Mapping> CreateWithContentsOfFile(int namespace_fd,
+                                                       const char* file_path,
+                                                       bool executable) {
+  FML_TRACE_EVENT("flutter", "LoadFile", "path", file_path);
+  return std::make_unique<FileInNamespaceBuffer>(namespace_fd, file_path,
+                                                 executable);
 }
 
-static std::unique_ptr<fml::FileMapping> MakeFileMapping(const char* path,
-                                                         bool executable) {
+std::unique_ptr<fml::FileMapping> MakeFileMapping(const char* path,
+                                                  bool executable) {
   uint32_t flags = OPEN_RIGHT_READABLE;
   if (executable) {
     flags |= OPEN_RIGHT_EXECUTABLE;
@@ -112,12 +148,58 @@ static std::unique_ptr<fml::FileMapping> MakeFileMapping(const char* path,
   return mapping;
 }
 
-// Defaults to readonly. If executable is `true`, we treat it as `read + exec`.
-static flutter::MappingCallback MakeDataFileMapping(const char* absolute_path,
-                                                    bool executable = false) {
-  return [absolute_path, executable = executable](void) {
-    return MakeFileMapping(absolute_path, executable);
-  };
+std::string DebugLabelForURL(const std::string& url) {
+  auto found = url.rfind("/");
+  if (found == std::string::npos) {
+    return url;
+  } else {
+    return {url, found + 1};
+  }
+}
+
+}  // namespace
+
+void Application::ParseProgramMetadata(
+    const fidl::VectorPtr<fuchsia::sys::ProgramMetadata>& program_metadata,
+    std::string* data_path,
+    std::string* assets_path) {
+  if (!program_metadata.has_value()) {
+    return;
+  }
+  for (const auto& pg : *program_metadata) {
+    if (pg.key.compare(kDataKey) == 0) {
+      *data_path = "pkg/" + pg.value;
+    } else if (pg.key.compare(kAssetsKey) == 0) {
+      *assets_path = "pkg/" + pg.value;
+    }
+  }
+
+  // assets_path defaults to the same as data_path if omitted.
+  if (assets_path->empty()) {
+    *assets_path = *data_path;
+  }
+}
+
+ActiveApplication Application::Create(
+    TerminationCallback termination_callback,
+    fuchsia::sys::Package package,
+    fuchsia::sys::StartupInfo startup_info,
+    std::shared_ptr<sys::ServiceDirectory> runner_incoming_services,
+    fidl::InterfaceRequest<fuchsia::sys::ComponentController> controller) {
+  std::unique_ptr<Thread> thread = std::make_unique<Thread>();
+  std::unique_ptr<Application> application;
+
+  fml::AutoResetWaitableEvent latch;
+  async::PostTask(thread->dispatcher(), [&]() mutable {
+    application.reset(
+        new Application(std::move(termination_callback), std::move(package),
+                        std::move(startup_info), runner_incoming_services,
+                        std::move(controller)));
+    latch.Signal();
+  });
+
+  latch.Wait();
+  return {.thread = std::move(thread), .application = std::move(application)};
 }
 
 Application::Application(
@@ -145,14 +227,11 @@ Application::Application(
     settings_.dart_entrypoint_args = arguments.value();
   }
 
-  // Determine /pkg/data directory from StartupInfo.
+  // Determine where data and assets are stored within /pkg.
   std::string data_path;
-  for (size_t i = 0; i < startup_info.program_metadata->size(); ++i) {
-    auto pg = startup_info.program_metadata->at(i);
-    if (pg.key.compare(kDataKey) == 0) {
-      data_path = "pkg/" + pg.value;
-    }
-  }
+  std::string assets_path;
+  ParseProgramMetadata(startup_info.program_metadata, &data_path, &assets_path);
+
   if (data_path.empty()) {
     FML_DLOG(ERROR) << "Could not find a /pkg/data directory for "
                     << package.resolved_url;
@@ -185,11 +264,20 @@ Application::Application(
     }
   }
 
-  application_directory_.reset(fdio_ns_opendir(fdio_ns_.get()));
-  FML_DCHECK(application_directory_.is_valid());
+  {
+    fml::UniqueFD ns_fd(fdio_ns_opendir(fdio_ns_.get()));
+    FML_DCHECK(ns_fd.is_valid());
 
-  application_assets_directory_.reset(openat(
-      application_directory_.get(), data_path.c_str(), O_RDONLY | O_DIRECTORY));
+    constexpr mode_t mode = O_RDONLY | O_DIRECTORY;
+
+    application_assets_directory_.reset(
+        openat(ns_fd.get(), assets_path.c_str(), mode));
+    FML_DCHECK(application_assets_directory_.is_valid());
+
+    application_data_directory_.reset(
+        openat(ns_fd.get(), data_path.c_str(), mode));
+    FML_DCHECK(application_data_directory_.is_valid());
+  }
 
   // TODO: LaunchInfo::out.
 
@@ -231,15 +319,21 @@ Application::Application(
                          << "): " << zx_status_get_string(status);
           return;
         }
-        const char* other_dirs[] = {"debug", "ctrl"};
+        const char* other_dirs[] = {"debug", "ctrl", "diagnostics"};
         // add other directories as RemoteDirs.
         for (auto& dir_str : other_dirs) {
           fidl::InterfaceHandle<fuchsia::io::Directory> dir;
           auto request = dir.NewRequest().TakeChannel();
-          fdio_service_connect_at(directory_ptr_.channel().get(), dir_str,
-                                  request.release());
-          outgoing_dir_->AddEntry(
-              dir_str, std::make_unique<vfs::RemoteDir>(dir.TakeChannel()));
+          auto status = fdio_service_connect_at(directory_ptr_.channel().get(),
+                                                dir_str, request.release());
+          if (status == ZX_OK) {
+            outgoing_dir_->AddEntry(
+                dir_str, std::make_unique<vfs::RemoteDir>(dir.TakeChannel()));
+          } else {
+            FML_LOG(ERROR) << "could not add out directory entry(" << dir_str
+                           << ") for flutter app(" << debug_label_
+                           << "): " << zx_status_get_string(status);
+          }
         }
       };
 
@@ -267,43 +361,91 @@ Application::Application(
     application_controller_.Bind(std::move(application_controller_request));
   }
 
-  // Compare flutter_jit_runner in BUILD.gn.
-  settings_.vm_snapshot_data =
-      MakeDataFileMapping("/pkg/data/vm_snapshot_data.bin");
-  settings_.vm_snapshot_instr =
-      MakeDataFileMapping("/pkg/data/vm_snapshot_instructions.bin", true);
+  // Load and use runner-specific configuration, if it exists.
+  std::string json_string;
+  if (dart_utils::ReadFileToString(kRunnerConfigPath, &json_string)) {
+    product_config_ = FlutterRunnerProductConfiguration(json_string);
+    FML_LOG(INFO) << "Successfully loaded runner configuration: "
+                  << json_string;
+  } else {
+    FML_LOG(WARNING) << "Failed to load runner configuration from "
+                     << kRunnerConfigPath << "; using default config values.";
+  }
 
-  settings_.isolate_snapshot_data =
-      MakeDataFileMapping("/pkg/data/isolate_core_snapshot_data.bin");
-  settings_.isolate_snapshot_instr = MakeDataFileMapping(
-      "/pkg/data/isolate_core_snapshot_instructions.bin", true);
-
-  {
-    // Check if we can use the snapshot with the framework already loaded.
-    std::string runner_framework;
-    std::string app_framework;
-    if (dart_utils::ReadFileToString("pkg/data/runner.frameworkversion",
-                                     &runner_framework) &&
-        dart_utils::ReadFileToStringAt(application_assets_directory_.get(),
-                                       "app.frameworkversion",
-                                       &app_framework) &&
-        (runner_framework.compare(app_framework) == 0)) {
-      settings_.vm_snapshot_data =
-          MakeDataFileMapping("/pkg/data/framework_vm_snapshot_data.bin");
-      settings_.vm_snapshot_instr =
-          MakeDataFileMapping("/pkg/data/vm_snapshot_instructions.bin", true);
-
-      settings_.isolate_snapshot_data = MakeDataFileMapping(
-          "/pkg/data/framework_isolate_core_snapshot_data.bin");
-      settings_.isolate_snapshot_instr = MakeDataFileMapping(
-          "/pkg/data/isolate_core_snapshot_instructions.bin", true);
-
-      FML_LOG(INFO) << "Using snapshot with framework for "
-                    << package.resolved_url;
+  // Load VM and application bytecode.
+  // For AOT, compare with flutter_aot_app in flutter_app.gni.
+  // For JIT, compare flutter_jit_runner in BUILD.gn.
+  if (flutter::DartVM::IsRunningPrecompiledCode()) {
+    std::shared_ptr<dart_utils::ElfSnapshot> snapshot =
+        std::make_shared<dart_utils::ElfSnapshot>();
+    if (snapshot->Load(application_data_directory_.get(),
+                       "app_aot_snapshot.so")) {
+      const uint8_t* isolate_data = snapshot->IsolateData();
+      const uint8_t* isolate_instructions = snapshot->IsolateInstrs();
+      const uint8_t* vm_data = snapshot->VmData();
+      const uint8_t* vm_instructions = snapshot->VmInstrs();
+      if (isolate_data == nullptr || isolate_instructions == nullptr ||
+          vm_data == nullptr || vm_instructions == nullptr) {
+        FML_LOG(FATAL) << "ELF snapshot missing AOT symbols.";
+        return;
+      }
+      auto hold_snapshot = [snapshot](const uint8_t* _, size_t __) {};
+      settings_.vm_snapshot_data = [hold_snapshot, vm_data]() {
+        return std::make_unique<fml::NonOwnedMapping>(vm_data, 0,
+                                                      hold_snapshot);
+      };
+      settings_.vm_snapshot_instr = [hold_snapshot, vm_instructions]() {
+        return std::make_unique<fml::NonOwnedMapping>(vm_instructions, 0,
+                                                      hold_snapshot);
+      };
+      settings_.isolate_snapshot_data = [hold_snapshot, isolate_data]() {
+        return std::make_unique<fml::NonOwnedMapping>(isolate_data, 0,
+                                                      hold_snapshot);
+      };
+      settings_.isolate_snapshot_instr = [hold_snapshot,
+                                          isolate_instructions]() {
+        return std::make_unique<fml::NonOwnedMapping>(isolate_instructions, 0,
+                                                      hold_snapshot);
+      };
+      isolate_snapshot_ = fml::MakeRefCounted<flutter::DartSnapshot>(
+          std::make_shared<fml::NonOwnedMapping>(isolate_data, 0,
+                                                 hold_snapshot),
+          std::make_shared<fml::NonOwnedMapping>(isolate_instructions, 0,
+                                                 hold_snapshot));
     } else {
-      FML_LOG(INFO) << "Using snapshot without framework for "
-                    << package.resolved_url;
+      const int namespace_fd = application_data_directory_.get();
+      settings_.vm_snapshot_data = [namespace_fd]() {
+        return CreateWithContentsOfFile(namespace_fd, "vm_snapshot_data.bin",
+                                        false);
+      };
+      settings_.vm_snapshot_instr = [namespace_fd]() {
+        return CreateWithContentsOfFile(namespace_fd,
+                                        "vm_snapshot_instructions.bin", true);
+      };
+      settings_.isolate_snapshot_data = [namespace_fd]() {
+        return CreateWithContentsOfFile(namespace_fd,
+                                        "isolate_snapshot_data.bin", false);
+      };
+      settings_.isolate_snapshot_instr = [namespace_fd]() {
+        return CreateWithContentsOfFile(
+            namespace_fd, "isolate_snapshot_instructions.bin", true);
+      };
     }
+  } else {
+    settings_.vm_snapshot_data = []() {
+      return MakeFileMapping("/pkg/data/vm_snapshot_data.bin", false);
+    };
+    settings_.vm_snapshot_instr = []() {
+      return MakeFileMapping("/pkg/data/vm_snapshot_instructions.bin", true);
+    };
+
+    settings_.isolate_snapshot_data = []() {
+      return MakeFileMapping("/pkg/data/isolate_core_snapshot_data.bin", false);
+    };
+    settings_.isolate_snapshot_instr = [] {
+      return MakeFileMapping("/pkg/data/isolate_core_snapshot_instructions.bin",
+                             true);
+    };
   }
 
 #if defined(DART_PRODUCT)
@@ -315,9 +457,14 @@ Application::Application(
   settings_.observatory_host = "127.0.0.1";
 #endif
 
-  // Set this to true to enable category "skia" trace events.
-  // TODO(PT-145): Explore enabling this by default.
-  settings_.trace_skia = false;
+  // Controls whether category "skia" trace events are enabled.
+  settings_.trace_skia = true;
+
+  settings_.verbose_logging = true;
+
+  settings_.advisory_script_uri = debug_label_;
+
+  settings_.advisory_script_entrypoint = debug_label_;
 
   settings_.icu_data_path = "";
 
@@ -339,6 +486,10 @@ Application::Application(
   settings_.disable_dart_asserts = true;
 #endif
 
+  // Do not leak the VM; allow it to shut down normally when the last shell
+  // terminates.
+  settings_.leak_vm = false;
+
   settings_.task_observer_add =
       std::bind(&CurrentMessageLoopAddAfterTaskObserver, std::placeholders::_1,
                 std::placeholders::_2);
@@ -346,20 +497,7 @@ Application::Application(
   settings_.task_observer_remove = std::bind(
       &CurrentMessageLoopRemoveAfterTaskObserver, std::placeholders::_1);
 
-  // TODO(FL-117): Re-enable causal async stack traces when this issue is
-  // addressed.
-  settings_.dart_flags = {"--no_causal_async_stacks"};
-
-  // Disable code collection as it interferes with JIT code warmup
-  // by decreasing usage counters and flushing code which is still useful.
-  settings_.dart_flags.push_back("--no-collect_code");
-
-  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
-    // The interpreter is enabled unconditionally in JIT mode. If an app is
-    // built for debugging (that is, with no bytecode), the VM will fall back on
-    // ASTs.
-    settings_.dart_flags.push_back("--enable_interpreter");
-  }
+  settings_.dart_flags = {"--no_causal_async_stacks", "--lazy_async_stacks"};
 
   // Don't collect CPU samples from Dart VM C++ code.
   settings_.dart_flags.push_back("--no_profile_vm");
@@ -409,8 +547,6 @@ Application::Application(
     // false to have the error and stack trace printed in the logs.
     return false;
   };
-
-  AttemptVMLaunchWithCurrentSettings(settings_);
 }
 
 Application::~Application() = default;
@@ -419,111 +555,6 @@ const std::string& Application::GetDebugLabel() const {
   return debug_label_;
 }
 
-class FileInNamespaceBuffer final : public fml::Mapping {
- public:
-  FileInNamespaceBuffer(int namespace_fd, const char* path, bool executable)
-      : address_(nullptr), size_(0) {
-    fuchsia::mem::Buffer buffer;
-    if (!dart_utils::VmoFromFilenameAt(namespace_fd, path, &buffer)) {
-      return;
-    }
-    if (buffer.size == 0) {
-      return;
-    }
-
-    uint32_t flags = ZX_VM_PERM_READ;
-    if (executable) {
-      flags |= ZX_VM_PERM_EXECUTE;
-
-      // VmoFromFilenameAt will return VMOs without ZX_RIGHT_EXECUTE,
-      // so we need replace_as_executable to be able to map them as
-      // ZX_VM_PERM_EXECUTE.
-      // TODO(mdempsky): Update comment once SEC-42 is fixed.
-      zx_status_t status =
-          buffer.vmo.replace_as_executable(zx::handle(), &buffer.vmo);
-      if (status != ZX_OK) {
-        FML_LOG(FATAL) << "Failed to make VMO executable: "
-                       << zx_status_get_string(status);
-      }
-    }
-    uintptr_t addr;
-    zx_status_t status =
-        zx::vmar::root_self()->map(0, buffer.vmo, 0, buffer.size, flags, &addr);
-    if (status != ZX_OK) {
-      FML_LOG(FATAL) << "Failed to map " << path << ": "
-                     << zx_status_get_string(status);
-    }
-
-    address_ = reinterpret_cast<void*>(addr);
-    size_ = buffer.size;
-  }
-
-  ~FileInNamespaceBuffer() {
-    if (address_ != nullptr) {
-      zx::vmar::root_self()->unmap(reinterpret_cast<uintptr_t>(address_),
-                                   size_);
-      address_ = nullptr;
-      size_ = 0;
-    }
-  }
-
-  // |fml::Mapping|
-  const uint8_t* GetMapping() const override {
-    return reinterpret_cast<const uint8_t*>(address_);
-  }
-
-  // |fml::Mapping|
-  size_t GetSize() const override { return size_; }
-
- private:
-  void* address_;
-  size_t size_;
-
-  FML_DISALLOW_COPY_AND_ASSIGN(FileInNamespaceBuffer);
-};
-
-std::unique_ptr<fml::Mapping> CreateWithContentsOfFile(int namespace_fd,
-                                                       const char* file_path,
-                                                       bool executable) {
-  FML_TRACE_EVENT("flutter", "LoadFile", "path", file_path);
-  auto source = std::make_unique<FileInNamespaceBuffer>(namespace_fd, file_path,
-                                                        executable);
-  return source->GetMapping() == nullptr ? nullptr : std::move(source);
-}
-
-void Application::AttemptVMLaunchWithCurrentSettings(
-    const flutter::Settings& settings) {
-  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
-    // We will be initializing the VM lazily in this case.
-    return;
-  }
-
-  // Compare flutter_aot_app in flutter_app.gni.
-  fml::RefPtr<flutter::DartSnapshot> vm_snapshot =
-      fml::MakeRefCounted<flutter::DartSnapshot>(
-          CreateWithContentsOfFile(
-              application_assets_directory_.get() /* /pkg/data */,
-              "vm_snapshot_data.bin", false),
-          CreateWithContentsOfFile(
-              application_assets_directory_.get() /* /pkg/data */,
-              "vm_snapshot_instructions.bin", true));
-
-  isolate_snapshot_ = fml::MakeRefCounted<flutter::DartSnapshot>(
-      CreateWithContentsOfFile(
-          application_assets_directory_.get() /* /pkg/data */,
-          "isolate_snapshot_data.bin", false),
-      CreateWithContentsOfFile(
-          application_assets_directory_.get() /* /pkg/data */,
-          "isolate_snapshot_instructions.bin", true));
-
-  auto vm = flutter::DartVMRef::Create(settings_,               //
-                                       std::move(vm_snapshot),  //
-                                       isolate_snapshot_        //
-  );
-  FML_CHECK(vm) << "Mut be able to initialize the VM.";
-}
-
-// |fuchsia::sys::ComponentController|
 void Application::Kill() {
   application_controller_.events().OnTerminated(
       last_return_code_.second, fuchsia::sys::TerminationReason::EXITED);
@@ -533,12 +564,10 @@ void Application::Kill() {
   // collected.
 }
 
-// |fuchsia::sys::ComponentController|
 void Application::Detach() {
   application_controller_.set_error_handler(nullptr);
 }
 
-// |flutter::Engine::Delegate|
 void Application::OnEngineTerminate(const Engine* shell_holder) {
   auto found = std::find_if(shell_holders_.begin(), shell_holders_.end(),
                             [shell_holder](const auto& holder) {
@@ -553,8 +582,8 @@ void Application::OnEngineTerminate(const Engine* shell_holder) {
   // terminate when the last shell goes away. The error code return to the
   // application controller will be the last isolate that had an error.
   auto return_code = shell_holder->GetEngineReturnCode();
-  if (return_code.first) {
-    last_return_code_ = return_code;
+  if (return_code.has_value()) {
+    last_return_code_ = {true, return_code.value()};
   }
 
   shell_holders_.erase(found);
@@ -566,11 +595,20 @@ void Application::OnEngineTerminate(const Engine* shell_holder) {
   }
 }
 
-// |fuchsia::ui::app::ViewProvider|
 void Application::CreateView(
+    zx::eventpair token,
+    fidl::InterfaceRequest<fuchsia::sys::ServiceProvider> /*incoming_services*/,
+    fidl::InterfaceHandle<
+        fuchsia::sys::ServiceProvider> /*outgoing_services*/) {
+  auto view_ref_pair = scenic::ViewRefPair::New();
+  CreateViewWithViewRef(std::move(token), std::move(view_ref_pair.control_ref),
+                        std::move(view_ref_pair.view_ref));
+}
+
+void Application::CreateViewWithViewRef(
     zx::eventpair view_token,
-    fidl::InterfaceRequest<fuchsia::sys::ServiceProvider> incoming_services,
-    fidl::InterfaceHandle<fuchsia::sys::ServiceProvider> outgoing_services) {
+    fuchsia::ui::views::ViewRefControl control_ref,
+    fuchsia::ui::views::ViewRef view_ref) {
   if (!svc_) {
     FML_DLOG(ERROR)
         << "Component incoming services was invalid when attempting to "
@@ -578,29 +616,20 @@ void Application::CreateView(
     return;
   }
 
-  // TODO(MI4-2490): remove once ViewRefControl and ViewRef come as a parameters
-  // to CreateView
-  fuchsia::ui::views::ViewRefControl view_ref_control;
-  fuchsia::ui::views::ViewRef view_ref;
-  zx_status_t status = zx::eventpair::create(
-      /*flags*/ 0u, &view_ref_control.reference, &view_ref.reference);
-  FML_DCHECK(status == ZX_OK);
-
-  status = view_ref.reference.replace(ZX_RIGHTS_BASIC, &view_ref.reference);
-  FML_DCHECK(status == ZX_OK);
-
   shell_holders_.emplace(std::make_unique<Engine>(
-      *this,                         // delegate
-      debug_label_,                  // thread label
-      svc_,                          // Component incoming services
-      runner_incoming_services_,     // Runner incoming services
-      settings_,                     // settings
-      std::move(isolate_snapshot_),  // isolate snapshot
+      *this,                      // delegate
+      debug_label_,               // thread label
+      svc_,                       // Component incoming services
+      runner_incoming_services_,  // Runner incoming services
+      settings_,                  // settings
       scenic::ToViewToken(std::move(view_token)),  // view token
-      std::move(view_ref_control),                 // view ref control
-      std::move(view_ref),                         // view ref
-      std::move(fdio_ns_),                         // FDIO namespace
-      std::move(directory_request_)                // outgoing request
+      scenic::ViewRefPair{
+          .control_ref = std::move(control_ref),
+          .view_ref = std::move(view_ref),
+      },
+      std::move(fdio_ns_),            // FDIO namespace
+      std::move(directory_request_),  // outgoing request
+      product_config_                 // product configuration
       ));
 }
 

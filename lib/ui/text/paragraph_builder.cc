@@ -4,13 +4,15 @@
 
 #include "flutter/lib/ui/text/paragraph_builder.h"
 
+#include <cstring>
+
 #include "flutter/common/settings.h"
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/task_runner.h"
 #include "flutter/lib/ui/text/font_collection.h"
 #include "flutter/lib/ui/ui_dart_state.h"
-#include "flutter/lib/ui/window/window.h"
+#include "flutter/lib/ui/window/platform_configuration.h"
 #include "flutter/third_party/txt/src/txt/font_style.h"
 #include "flutter/third_party/txt/src/txt/font_weight.h"
 #include "flutter/third_party/txt/src/txt/paragraph_style.h"
@@ -37,17 +39,18 @@ const int tsTextDecorationStyleIndex = 4;
 const int tsFontWeightIndex = 5;
 const int tsFontStyleIndex = 6;
 const int tsTextBaselineIndex = 7;
-const int tsTextDecorationThicknessIndex = 8;
-const int tsFontFamilyIndex = 9;
-const int tsFontSizeIndex = 10;
-const int tsLetterSpacingIndex = 11;
-const int tsWordSpacingIndex = 12;
-const int tsHeightIndex = 13;
-const int tsLocaleIndex = 14;
-const int tsBackgroundIndex = 15;
-const int tsForegroundIndex = 16;
-const int tsTextShadowsIndex = 17;
-const int tsFontFeaturesIndex = 18;
+const int tsLeadingDistributionIndex = 8;
+const int tsTextDecorationThicknessIndex = 9;
+const int tsFontFamilyIndex = 10;
+const int tsFontSizeIndex = 11;
+const int tsLetterSpacingIndex = 12;
+const int tsWordSpacingIndex = 13;
+const int tsHeightIndex = 14;
+const int tsLocaleIndex = 15;
+const int tsBackgroundIndex = 16;
+const int tsForegroundIndex = 17;
+const int tsTextShadowsIndex = 18;
+const int tsFontFeaturesIndex = 19;
 
 const int tsColorMask = 1 << tsColorIndex;
 const int tsTextDecorationMask = 1 << tsTextDecorationIndex;
@@ -57,6 +60,7 @@ const int tsTextDecorationThicknessMask = 1 << tsTextDecorationThicknessIndex;
 const int tsFontWeightMask = 1 << tsFontWeightIndex;
 const int tsFontStyleMask = 1 << tsFontStyleIndex;
 const int tsTextBaselineMask = 1 << tsTextBaselineIndex;
+const int tsLeadingDistributionMask = 1 << tsLeadingDistributionIndex;
 const int tsFontFamilyMask = 1 << tsFontFamilyIndex;
 const int tsFontSizeMask = 1 << tsFontSizeIndex;
 const int tsLetterSpacingMask = 1 << tsLetterSpacingIndex;
@@ -75,12 +79,13 @@ const int psTextDirectionIndex = 2;
 const int psFontWeightIndex = 3;
 const int psFontStyleIndex = 4;
 const int psMaxLinesIndex = 5;
-const int psFontFamilyIndex = 6;
-const int psFontSizeIndex = 7;
-const int psHeightIndex = 8;
-const int psStrutStyleIndex = 9;
-const int psEllipsisIndex = 10;
-const int psLocaleIndex = 11;
+const int psTextHeightBehaviorIndex = 6;
+const int psFontFamilyIndex = 7;
+const int psFontSizeIndex = 8;
+const int psHeightIndex = 9;
+const int psStrutStyleIndex = 10;
+const int psEllipsisIndex = 11;
+const int psLocaleIndex = 12;
 
 const int psTextAlignMask = 1 << psTextAlignIndex;
 const int psTextDirectionMask = 1 << psTextDirectionIndex;
@@ -90,6 +95,7 @@ const int psMaxLinesMask = 1 << psMaxLinesIndex;
 const int psFontFamilyMask = 1 << psFontFamilyIndex;
 const int psFontSizeMask = 1 << psFontSizeIndex;
 const int psHeightMask = 1 << psHeightIndex;
+const int psTextHeightBehaviorMask = 1 << psTextHeightBehaviorIndex;
 const int psStrutStyleMask = 1 << psStrutStyleIndex;
 const int psEllipsisMask = 1 << psEllipsisIndex;
 const int psLocaleMask = 1 << psLocaleIndex;
@@ -112,14 +118,16 @@ constexpr uint32_t kFontFeatureTagLength = 4;
 const int sFontWeightIndex = 0;
 const int sFontStyleIndex = 1;
 const int sFontFamilyIndex = 2;
-const int sFontSizeIndex = 3;
-const int sHeightIndex = 4;
-const int sLeadingIndex = 5;
-const int sForceStrutHeightIndex = 6;
+const int sLeadingDistributionIndex = 3;
+const int sFontSizeIndex = 4;
+const int sHeightIndex = 5;
+const int sLeadingIndex = 6;
+const int sForceStrutHeightIndex = 7;
 
 const int sFontWeightMask = 1 << sFontWeightIndex;
 const int sFontStyleMask = 1 << sFontStyleIndex;
 const int sFontFamilyMask = 1 << sFontFamilyIndex;
+const int sLeadingDistributionMask = 1 << sLeadingDistributionIndex;
 const int sFontSizeMask = 1 << sFontSizeIndex;
 const int sHeightMask = 1 << sHeightIndex;
 const int sLeadingMask = 1 << sLeadingIndex;
@@ -128,6 +136,7 @@ const int sForceStrutHeightMask = 1 << sForceStrutHeightIndex;
 }  // namespace
 
 static void ParagraphBuilder_constructor(Dart_NativeArguments args) {
+  UIDartState::ThrowIfUIOperationsProhibited();
   DartCallConstructor(&ParagraphBuilder::create, args);
 }
 
@@ -166,7 +175,7 @@ fml::RefPtr<ParagraphBuilder> ParagraphBuilder::create(
 // parameter passed directly.
 void decodeStrut(Dart_Handle strut_data,
                  const std::vector<std::string>& strut_font_families,
-                 txt::ParagraphStyle& paragraph_style) {
+                 txt::ParagraphStyle& paragraph_style) {  // NOLINT
   if (strut_data == Dart_Null()) {
     return;
   }
@@ -192,6 +201,10 @@ void decodeStrut(Dart_Handle strut_data,
     paragraph_style.strut_font_style =
         static_cast<txt::FontStyle>(uint8_data[byte_count++]);
   }
+  if (mask & sLeadingDistributionMask) {
+    paragraph_style.strut_has_leading_distribution_override = true;
+    paragraph_style.strut_half_leading = uint8_data[byte_count++];
+  }
 
   std::vector<float> float_data;
   float_data.resize((byte_data.length_in_bytes() - byte_count) / 4);
@@ -209,10 +222,10 @@ void decodeStrut(Dart_Handle strut_data,
   if (mask & sLeadingMask) {
     paragraph_style.strut_leading = float_data[float_count++];
   }
-  if (mask & sForceStrutHeightMask) {
-    // The boolean is stored as the last bit in the bitmask.
-    paragraph_style.force_strut_height = (mask & 1 << 7) != 0;
-  }
+
+  // The boolean is stored as the last bit in the bitmask, as null
+  // and false have the same behavior.
+  paragraph_style.force_strut_height = mask & sForceStrutHeightMask;
 
   if (mask & sFontFamilyMask) {
     paragraph_style.strut_font_families = strut_font_families;
@@ -265,6 +278,10 @@ ParagraphBuilder::ParagraphBuilder(
     style.has_height_override = true;
   }
 
+  if (mask & psTextHeightBehaviorMask) {
+    style.text_height_behavior = encoded[psTextHeightBehaviorIndex];
+  }
+
   if (mask & psStrutStyleMask) {
     decodeStrut(strutData, strutFontFamilies, style);
   }
@@ -281,23 +298,35 @@ ParagraphBuilder::ParagraphBuilder(
     style.locale = locale;
   }
 
-  FontCollection& font_collection =
-      UIDartState::Current()->window()->client()->GetFontCollection();
+  FontCollection& font_collection = UIDartState::Current()
+                                        ->platform_configuration()
+                                        ->client()
+                                        ->GetFontCollection();
+
+  typedef std::unique_ptr<txt::ParagraphBuilder> (*ParagraphBuilderFactory)(
+      const txt::ParagraphStyle& style,
+      std::shared_ptr<txt::FontCollection> font_collection);
+  ParagraphBuilderFactory factory = txt::ParagraphBuilder::CreateTxtBuilder;
 
 #if FLUTTER_ENABLE_SKSHAPER
-#define FLUTTER_PARAGRAPH_BUILDER txt::ParagraphBuilder::CreateSkiaBuilder
+#if FLUTTER_ALWAYS_USE_SKSHAPER
+  bool enable_skparagraph = true;
 #else
-#define FLUTTER_PARAGRAPH_BUILDER txt::ParagraphBuilder::CreateTxtBuilder
+  bool enable_skparagraph = UIDartState::Current()->enable_skparagraph();
 #endif
+  if (enable_skparagraph) {
+    factory = txt::ParagraphBuilder::CreateSkiaBuilder;
+  }
+#endif  // FLUTTER_ENABLE_SKSHAPER
 
-  m_paragraphBuilder =
-      FLUTTER_PARAGRAPH_BUILDER(style, font_collection.GetFontCollection());
+  m_paragraphBuilder = factory(style, font_collection.GetFontCollection());
 }
 
 ParagraphBuilder::~ParagraphBuilder() = default;
 
-void decodeTextShadows(Dart_Handle shadows_data,
-                       std::vector<txt::TextShadow>& decoded_shadows) {
+void decodeTextShadows(
+    Dart_Handle shadows_data,
+    std::vector<txt::TextShadow>& decoded_shadows) {  // NOLINT
   decoded_shadows.clear();
 
   tonic::DartByteData byte_data(shadows_data);
@@ -321,7 +350,7 @@ void decodeTextShadows(Dart_Handle shadows_data,
 }
 
 void decodeFontFeatures(Dart_Handle font_features_data,
-                        txt::FontFeatures& font_features) {
+                        txt::FontFeatures& font_features) {  // NOLINT
   tonic::DartByteData byte_data(font_features_data);
   FML_CHECK(byte_data.length_in_bytes() % kBytesPerFontFeature == 0);
 
@@ -352,7 +381,7 @@ void ParagraphBuilder::pushStyle(tonic::Int32List& encoded,
                                  Dart_Handle foreground_data,
                                  Dart_Handle shadows_data,
                                  Dart_Handle font_features_data) {
-  FML_DCHECK(encoded.num_elements() == 8);
+  FML_DCHECK(encoded.num_elements() == 9);
 
   int32_t mask = encoded[0];
 
@@ -389,23 +418,33 @@ void ParagraphBuilder::pushStyle(tonic::Int32List& encoded,
     // property wasn't wired up either.
   }
 
+  style.has_leading_distribution_override = mask & tsLeadingDistributionMask;
+  if (mask & tsLeadingDistributionMask) {
+    style.half_leading = encoded[tsLeadingDistributionIndex];
+  }
+
   if (mask & (tsFontWeightMask | tsFontStyleMask | tsFontSizeMask |
               tsLetterSpacingMask | tsWordSpacingMask)) {
-    if (mask & tsFontWeightMask)
+    if (mask & tsFontWeightMask) {
       style.font_weight =
           static_cast<txt::FontWeight>(encoded[tsFontWeightIndex]);
+    }
 
-    if (mask & tsFontStyleMask)
+    if (mask & tsFontStyleMask) {
       style.font_style = static_cast<txt::FontStyle>(encoded[tsFontStyleIndex]);
+    }
 
-    if (mask & tsFontSizeMask)
+    if (mask & tsFontSizeMask) {
       style.font_size = fontSize;
+    }
 
-    if (mask & tsLetterSpacingMask)
+    if (mask & tsLetterSpacingMask) {
       style.letter_spacing = letterSpacing;
+    }
 
-    if (mask & tsWordSpacingMask)
+    if (mask & tsWordSpacingMask) {
       style.word_spacing = wordSpacing;
+    }
   }
 
   if (mask & tsHeightMask) {
@@ -456,8 +495,9 @@ void ParagraphBuilder::pop() {
 }
 
 Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
-  if (text.empty())
+  if (text.empty()) {
     return Dart_Null();
+  }
 
   // Use ICU to validate the UTF-16 input.  Calling u_strToUTF8 with a null
   // output buffer will return U_BUFFER_OVERFLOW_ERROR if the input is well
@@ -465,8 +505,9 @@ Dart_Handle ParagraphBuilder::addText(const std::u16string& text) {
   const UChar* text_ptr = reinterpret_cast<const UChar*>(text.data());
   UErrorCode error_code = U_ZERO_ERROR;
   u_strToUTF8(nullptr, 0, nullptr, text_ptr, text.size(), &error_code);
-  if (error_code != U_BUFFER_OVERFLOW_ERROR)
+  if (error_code != U_BUFFER_OVERFLOW_ERROR) {
     return tonic::ToDart("string is not well-formed UTF-16");
+  }
 
   m_paragraphBuilder->AddText(text);
 
@@ -487,8 +528,8 @@ Dart_Handle ParagraphBuilder::addPlaceholder(double width,
   return Dart_Null();
 }
 
-fml::RefPtr<Paragraph> ParagraphBuilder::build() {
-  return Paragraph::Create(m_paragraphBuilder->Build());
+void ParagraphBuilder::build(Dart_Handle paragraph_handle) {
+  Paragraph::Create(paragraph_handle, m_paragraphBuilder->Build());
 }
 
 }  // namespace flutter

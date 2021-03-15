@@ -1,22 +1,25 @@
 package io.flutter.embedding.android;
 
+import static org.junit.Assert.assertNotNull;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
+
 import android.app.Activity;
-import android.arch.lifecycle.Lifecycle;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
-import org.robolectric.Robolectric;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
-
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.lifecycle.Lifecycle;
 import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterEngineCache;
 import io.flutter.embedding.engine.FlutterJNI;
@@ -25,19 +28,21 @@ import io.flutter.embedding.engine.loader.FlutterLoader;
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
+import io.flutter.embedding.engine.systemchannels.LifecycleChannel;
 import io.flutter.plugin.platform.PlatformPlugin;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.annotation.Config;
 
-import static org.junit.Assert.assertNotNull;
-import static org.mockito.Matchers.any;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.withSettings;
-
-@Config(manifest=Config.NONE)
+@Config(manifest = Config.NONE)
 @RunWith(RobolectricTestRunner.class)
 public class FlutterAndroidComponentTest {
   @Test
@@ -47,7 +52,8 @@ public class FlutterAndroidComponentTest {
     FlutterLoader mockFlutterLoader = mock(FlutterLoader.class);
     FlutterJNI mockFlutterJni = mock(FlutterJNI.class);
     when(mockFlutterJni.isAttached()).thenReturn(true);
-    FlutterEngine cachedEngine = spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
+    FlutterEngine cachedEngine =
+        spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
     FlutterEngineCache.getInstance().put("my_flutter_engine", cachedEngine);
 
     // Add mock plugin.
@@ -55,7 +61,8 @@ public class FlutterAndroidComponentTest {
     cachedEngine.getPlugins().add(mockPlugin);
 
     // Create a fake Host, which is required by the delegate.
-    FlutterActivityAndFragmentDelegate.Host fakeHost = new FakeHost(cachedEngine);
+    FakeHost fakeHost = new FakeHost(cachedEngine);
+    fakeHost.shouldDestroyEngineWithHost = true;
 
     // Create the real object that we're testing.
     FlutterActivityAndFragmentDelegate delegate = new FlutterActivityAndFragmentDelegate(fakeHost);
@@ -65,7 +72,8 @@ public class FlutterAndroidComponentTest {
     delegate.onAttach(RuntimeEnvironment.application);
 
     // Verify that the plugin is attached to the FlutterEngine.
-    ArgumentCaptor<FlutterPlugin.FlutterPluginBinding> pluginBindingCaptor = ArgumentCaptor.forClass(FlutterPlugin.FlutterPluginBinding.class);
+    ArgumentCaptor<FlutterPlugin.FlutterPluginBinding> pluginBindingCaptor =
+        ArgumentCaptor.forClass(FlutterPlugin.FlutterPluginBinding.class);
     verify(mockPlugin, times(1)).onAttachedToEngine(pluginBindingCaptor.capture());
     FlutterPlugin.FlutterPluginBinding binding = pluginBindingCaptor.getValue();
     assertNotNull(binding.getApplicationContext());
@@ -73,7 +81,7 @@ public class FlutterAndroidComponentTest {
     assertNotNull(binding.getTextureRegistry());
     assertNotNull(binding.getPlatformViewRegistry());
 
-    delegate.onActivityCreated(null);
+    delegate.onRestoreInstanceState(null);
     delegate.onCreateView(null, null, null);
     delegate.onStart();
     delegate.onResume();
@@ -99,23 +107,30 @@ public class FlutterAndroidComponentTest {
     FlutterLoader mockFlutterLoader = mock(FlutterLoader.class);
     FlutterJNI mockFlutterJni = mock(FlutterJNI.class);
     when(mockFlutterJni.isAttached()).thenReturn(true);
-    FlutterEngine cachedEngine = spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
+    FlutterEngine cachedEngine =
+        spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
     FlutterEngineCache.getInstance().put("my_flutter_engine", cachedEngine);
 
     // Add mock plugin.
-    FlutterPlugin mockPlugin = mock(FlutterPlugin.class, withSettings().extraInterfaces(ActivityAware.class));
+    FlutterPlugin mockPlugin =
+        mock(FlutterPlugin.class, withSettings().extraInterfaces(ActivityAware.class));
     ActivityAware activityAwarePlugin = (ActivityAware) mockPlugin;
-    ActivityPluginBinding.OnSaveInstanceStateListener mockSaveStateListener = mock(ActivityPluginBinding.OnSaveInstanceStateListener.class);
+    ActivityPluginBinding.OnSaveInstanceStateListener mockSaveStateListener =
+        mock(ActivityPluginBinding.OnSaveInstanceStateListener.class);
 
     // Add a OnSaveStateListener when the Activity plugin binding is made available.
-    doAnswer(new Answer() {
-      @Override
-      public Object answer(InvocationOnMock invocation) throws Throwable {
-        ActivityPluginBinding binding = (ActivityPluginBinding) invocation.getArguments()[0];
-        binding.addOnSaveStateListener(mockSaveStateListener);
-        return null;
-      }
-    }).when(activityAwarePlugin).onAttachedToActivity(any(ActivityPluginBinding.class));
+    doAnswer(
+            new Answer() {
+              @Override
+              public Object answer(InvocationOnMock invocation) throws Throwable {
+                ActivityPluginBinding binding =
+                    (ActivityPluginBinding) invocation.getArguments()[0];
+                binding.addOnSaveStateListener(mockSaveStateListener);
+                return null;
+              }
+            })
+        .when(activityAwarePlugin)
+        .onAttachedToActivity(any(ActivityPluginBinding.class));
 
     cachedEngine.getPlugins().add(mockPlugin);
 
@@ -129,13 +144,14 @@ public class FlutterAndroidComponentTest {
     delegate.onAttach(RuntimeEnvironment.application);
 
     // Verify plugin was given an ActivityPluginBinding.
-    ArgumentCaptor<ActivityPluginBinding> pluginBindingCaptor = ArgumentCaptor.forClass(ActivityPluginBinding.class);
+    ArgumentCaptor<ActivityPluginBinding> pluginBindingCaptor =
+        ArgumentCaptor.forClass(ActivityPluginBinding.class);
     verify(activityAwarePlugin, times(1)).onAttachedToActivity(pluginBindingCaptor.capture());
     ActivityPluginBinding binding = pluginBindingCaptor.getValue();
     assertNotNull(binding.getActivity());
     assertNotNull(binding.getLifecycle());
 
-    delegate.onActivityCreated(null);
+    delegate.onRestoreInstanceState(null);
 
     // Verify that after Activity creation, the plugin was allowed to restore state.
     verify(mockSaveStateListener, times(1)).onRestoreInstanceState(any(Bundle.class));
@@ -157,9 +173,87 @@ public class FlutterAndroidComponentTest {
     verify(activityAwarePlugin, times(1)).onDetachedFromActivity();
   }
 
+  @Test
+  public void normalLifecycleStepsDoNotTriggerADetachFromFlutterEngine() {
+    // ---- Test setup ----
+    // Place a FlutterEngine in the static cache.
+    FlutterLoader mockFlutterLoader = mock(FlutterLoader.class);
+    FlutterJNI mockFlutterJni = mock(FlutterJNI.class);
+    when(mockFlutterJni.isAttached()).thenReturn(true);
+    FlutterEngine cachedEngine =
+        spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
+    FlutterEngineCache.getInstance().put("my_flutter_engine", cachedEngine);
+
+    // Create a fake Host, which is required by the delegate.
+    FakeHost fakeHost = new FakeHost(cachedEngine);
+
+    // Create the real object that we're testing.
+    FlutterActivityAndFragmentDelegate delegate =
+        spy(new FlutterActivityAndFragmentDelegate(fakeHost));
+
+    // --- Execute the behavior under test ---
+    // Push the delegate through all lifecycle methods all the way to destruction.
+    delegate.onAttach(RuntimeEnvironment.application);
+    delegate.onRestoreInstanceState(null);
+    delegate.onCreateView(null, null, null);
+    delegate.onStart();
+    delegate.onResume();
+    delegate.onPause();
+    delegate.onStop();
+    delegate.onDestroyView();
+    delegate.onDetach();
+
+    verify(delegate, never()).detachFromFlutterEngine();
+  }
+
+  @Test
+  public void twoOverlappingFlutterActivitiesDoNotCrosstalk() {
+    // ---- Test setup ----
+    // Place a FlutterEngine in the static cache.
+    FlutterLoader mockFlutterLoader = mock(FlutterLoader.class);
+    FlutterJNI mockFlutterJni = mock(FlutterJNI.class);
+    when(mockFlutterJni.isAttached()).thenReturn(true);
+    FlutterEngine cachedEngine =
+        spy(new FlutterEngine(RuntimeEnvironment.application, mockFlutterLoader, mockFlutterJni));
+    FlutterEngineCache.getInstance().put("my_flutter_engine", cachedEngine);
+    LifecycleChannel mockLifecycleChannel = mock(LifecycleChannel.class);
+    when(cachedEngine.getLifecycleChannel()).thenReturn(mockLifecycleChannel);
+
+    Intent intent =
+        FlutterActivity.withCachedEngine("my_flutter_engine").build(RuntimeEnvironment.application);
+    ActivityController<FlutterActivity> activityController1 =
+        Robolectric.buildActivity(FlutterActivity.class, intent);
+    activityController1.create().start().resume();
+
+    InOrder inOrder = inOrder(mockLifecycleChannel);
+    inOrder.verify(mockLifecycleChannel, times(1)).appIsResumed();
+    verifyNoMoreInteractions(mockLifecycleChannel);
+
+    activityController1.pause();
+    // Create a second instance on the same engine and start running it as well.
+    ActivityController<FlutterActivity> activityController2 =
+        Robolectric.buildActivity(FlutterActivity.class, intent);
+    activityController2.create().start().resume();
+
+    // From the onPause of the first activity.
+    inOrder.verify(mockLifecycleChannel, times(1)).appIsInactive();
+    // By creating the second activity, we should automatically detach the first activity.
+    inOrder.verify(mockLifecycleChannel, times(1)).appIsDetached();
+    // In order, the second activity then is resumed.
+    inOrder.verify(mockLifecycleChannel, times(1)).appIsResumed();
+    verifyNoMoreInteractions(mockLifecycleChannel);
+
+    // The first activity goes through the normal lifecycles of destruction, but since we
+    // detached the first activity during the second activity's creation, we should ignore the
+    // first activity's destruction events to avoid crosstalk.
+    activityController1.stop().destroy();
+    verifyNoMoreInteractions(mockLifecycleChannel);
+  }
+
   private static class FakeHost implements FlutterActivityAndFragmentDelegate.Host {
     final FlutterEngine cachedEngine;
     Activity activity;
+    boolean shouldDestroyEngineWithHost = false;
     Lifecycle lifecycle = mock(Lifecycle.class);
 
     private FakeHost(@NonNull FlutterEngine flutterEngine) {
@@ -171,7 +265,6 @@ public class FlutterAndroidComponentTest {
     public Context getContext() {
       return RuntimeEnvironment.application;
     }
-
 
     @Nullable
     @Override
@@ -191,7 +284,7 @@ public class FlutterAndroidComponentTest {
     @NonNull
     @Override
     public FlutterShellArgs getFlutterShellArgs() {
-      return new FlutterShellArgs(new String[]{});
+      return new FlutterShellArgs(new String[] {});
     }
 
     @Nullable
@@ -202,7 +295,7 @@ public class FlutterAndroidComponentTest {
 
     @Override
     public boolean shouldDestroyEngineWithHost() {
-      return true;
+      return shouldDestroyEngineWithHost;
     }
 
     @NonNull
@@ -225,14 +318,14 @@ public class FlutterAndroidComponentTest {
 
     @NonNull
     @Override
-    public FlutterView.RenderMode getRenderMode() {
-      return FlutterView.RenderMode.surface;
+    public RenderMode getRenderMode() {
+      return RenderMode.surface;
     }
 
     @NonNull
     @Override
-    public FlutterView.TransparencyMode getTransparencyMode() {
-      return FlutterView.TransparencyMode.transparent;
+    public TransparencyMode getTransparencyMode() {
+      return TransparencyMode.transparent;
     }
 
     @Nullable
@@ -249,7 +342,8 @@ public class FlutterAndroidComponentTest {
 
     @Nullable
     @Override
-    public PlatformPlugin providePlatformPlugin(@Nullable Activity activity, @NonNull FlutterEngine flutterEngine) {
+    public PlatformPlugin providePlatformPlugin(
+        @Nullable Activity activity, @NonNull FlutterEngine flutterEngine) {
       return null;
     }
 
@@ -265,9 +359,33 @@ public class FlutterAndroidComponentTest {
     }
 
     @Override
+    public boolean shouldHandleDeeplinking() {
+      return false;
+    }
+
+    @Override
+    public boolean shouldRestoreAndSaveState() {
+      return true;
+    }
+
+    @Override
+    public void onFlutterSurfaceViewCreated(@NonNull FlutterSurfaceView flutterSurfaceView) {}
+
+    @Override
+    public void onFlutterTextureViewCreated(@NonNull FlutterTextureView flutterTextureView) {}
+
+    @Override
     public void onFlutterUiDisplayed() {}
 
     @Override
     public void onFlutterUiNoLongerDisplayed() {}
+
+    @Override
+    public void detachFromFlutterEngine() {}
+
+    @Override
+    public boolean popSystemNavigator() {
+      return false;
+    }
   }
 }

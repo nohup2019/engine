@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/darwin/ios/framework/Source/vsync_waiter_ios.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/vsync_waiter_ios.h"
 
 #include <utility>
 
@@ -14,28 +14,6 @@
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/trace_event.h"
-
-@interface VSyncClient : NSObject
-
-- (instancetype)initWithTaskRunner:(fml::RefPtr<fml::TaskRunner>)task_runner
-                          callback:(flutter::VsyncWaiter::Callback)callback;
-
-- (void)await;
-
-- (void)invalidate;
-
-//------------------------------------------------------------------------------
-/// @brief      The display refresh rate used for reporting purposes. The engine does not care
-///             about this for frame scheduling. It is only used by tools for instrumentation. The
-///             engine uses the duration field of the link per frame for frame scheduling.
-///
-/// @attention  Do not use the this call in frame scheduling. It is only meant for reporting.
-///
-/// @return     The refresh rate in frames per second.
-///
-- (float)displayRefreshRate;
-
-@end
 
 namespace flutter {
 
@@ -55,11 +33,6 @@ VsyncWaiterIOS::~VsyncWaiterIOS() {
 
 void VsyncWaiterIOS::AwaitVSync() {
   [client_.get() await];
-}
-
-// |VsyncWaiter|
-float VsyncWaiterIOS::GetDisplayRefreshRate() const {
-  return [client_.get() displayRefreshRate];
 }
 
 }  // namespace flutter
@@ -90,9 +63,44 @@ float VsyncWaiterIOS::GetDisplayRefreshRate() const {
   return self;
 }
 
-- (float)displayRefreshRate {
+- (void)await {
+  display_link_.get().paused = NO;
+}
+
+- (void)onDisplayLink:(CADisplayLink*)link {
+  TRACE_EVENT0("flutter", "VSYNC");
+
+  CFTimeInterval delay = CACurrentMediaTime() - link.timestamp;
+  fml::TimePoint frame_start_time = fml::TimePoint::Now() - fml::TimeDelta::FromSecondsF(delay);
+  fml::TimePoint frame_target_time = frame_start_time + fml::TimeDelta::FromSecondsF(link.duration);
+
+  display_link_.get().paused = YES;
+
+  callback_(frame_start_time, frame_target_time);
+}
+
+- (void)invalidate {
+  [display_link_.get() invalidate];
+}
+
+- (void)dealloc {
+  [self invalidate];
+
+  [super dealloc];
+}
+
+@end
+
+@implementation DisplayLinkManager
+
++ (double)displayRefreshRate {
   if (@available(iOS 10.3, *)) {
-    auto preferredFPS = display_link_.get().preferredFramesPerSecond;  // iOS 10.0
+    fml::scoped_nsobject<CADisplayLink> display_link = fml::scoped_nsobject<CADisplayLink> {
+      [[CADisplayLink displayLinkWithTarget:[[DisplayLinkManager new] autorelease]
+                                   selector:@selector(onDisplayLink:)] retain]
+    };
+    display_link.get().paused = YES;
+    auto preferredFPS = display_link.get().preferredFramesPerSecond;  // iOS 10.0
 
     // From Docs:
     // The default value for preferredFramesPerSecond is 0. When this value is 0, the preferred
@@ -109,29 +117,8 @@ float VsyncWaiterIOS::GetDisplayRefreshRate() const {
   }
 }
 
-- (void)await {
-  display_link_.get().paused = NO;
-}
-
 - (void)onDisplayLink:(CADisplayLink*)link {
-  CFTimeInterval delay = CACurrentMediaTime() - link.timestamp;
-  fml::TimePoint frame_start_time = fml::TimePoint::Now() - fml::TimeDelta::FromSecondsF(delay);
-  fml::TimePoint frame_target_time = frame_start_time + fml::TimeDelta::FromSecondsF(link.duration);
-
-  display_link_.get().paused = YES;
-
-  callback_(frame_start_time, frame_target_time);
-}
-
-- (void)invalidate {
-  // [CADisplayLink invalidate] is thread-safe.
-  [display_link_.get() invalidate];
-}
-
-- (void)dealloc {
-  [self invalidate];
-
-  [super dealloc];
+  // no-op.
 }
 
 @end

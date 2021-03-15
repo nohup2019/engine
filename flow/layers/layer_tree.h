@@ -5,8 +5,7 @@
 #ifndef FLUTTER_FLOW_LAYERS_LAYER_TREE_H_
 #define FLUTTER_FLOW_LAYERS_LAYER_TREE_H_
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <memory>
 
 #include "flutter/flow/compositor_context.h"
@@ -20,16 +19,20 @@ namespace flutter {
 
 class LayerTree {
  public:
-  LayerTree();
+  LayerTree(const SkISize& frame_size, float device_pixel_ratio);
 
-  ~LayerTree();
-
-  void Preroll(CompositorContext::ScopedFrame& frame,
+  // Perform a preroll pass on the tree and return information about
+  // the tree that affects rendering this frame.
+  //
+  // Returns:
+  // - a boolean indicating whether or not the top level of the
+  //   layer tree performs any operations that require readback
+  //   from the root surface.
+  bool Preroll(CompositorContext::ScopedFrame& frame,
                bool ignore_raster_cache = false);
 
-#if defined(OS_FUCHSIA)
-  void UpdateScene(SceneUpdateContext& context,
-                   scenic::ContainerNode& container);
+#if defined(LEGACY_FUCHSIA_EMBEDDER)
+  void UpdateScene(std::shared_ptr<SceneUpdateContext> context);
 #endif
 
   void Paint(CompositorContext::ScopedFrame& frame,
@@ -44,13 +47,24 @@ class LayerTree {
   }
 
   const SkISize& frame_size() const { return frame_size_; }
+  float device_pixel_ratio() const { return device_pixel_ratio_; }
 
-  void set_frame_size(const SkISize& frame_size) { frame_size_ = frame_size; }
+#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
 
-  void RecordBuildTime(fml::TimePoint begin_start);
+  const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
+  PaintRegionMap& paint_region_map() { return paint_region_map_; }
+
+#endif  // FLUTTER_ENABLE_DIFF_CONTEXT
+
+  void RecordBuildTime(fml::TimePoint vsync_start,
+                       fml::TimePoint build_start,
+                       fml::TimePoint target_time);
+  fml::TimePoint vsync_start() const { return vsync_start_; }
+  fml::TimeDelta vsync_overhead() const { return build_start_ - vsync_start_; }
   fml::TimePoint build_start() const { return build_start_; }
   fml::TimePoint build_finish() const { return build_finish_; }
   fml::TimeDelta build_time() const { return build_finish_ - build_start_; }
+  fml::TimePoint target_time() const { return target_time_; }
 
   // The number of frame intervals missed after which the compositor must
   // trace the rasterized picture to a trace file. Specify 0 to disable all
@@ -71,21 +85,21 @@ class LayerTree {
     checkerboard_offscreen_layers_ = checkerboard;
   }
 
-  void set_device_pixel_ratio(double device_pixel_ratio) {
-    device_pixel_ratio_ = device_pixel_ratio;
-  }
-
-  double device_pixel_ratio() const { return device_pixel_ratio_; }
-
  private:
-  SkISize frame_size_ = SkISize::MakeEmpty();  // Physical pixels.
-  double device_pixel_ratio_ = 1.0;
   std::shared_ptr<Layer> root_layer_;
+  fml::TimePoint vsync_start_;
   fml::TimePoint build_start_;
   fml::TimePoint build_finish_;
+  fml::TimePoint target_time_;
+  SkISize frame_size_ = SkISize::MakeEmpty();  // Physical pixels.
+  const float device_pixel_ratio_;  // Logical / Physical pixels ratio.
   uint32_t rasterizer_tracing_threshold_;
   bool checkerboard_raster_cache_images_;
   bool checkerboard_offscreen_layers_;
+
+#ifdef FLUTTER_ENABLE_DIFF_CONTEXT
+  PaintRegionMap paint_region_map_;
+#endif  //  FLUTTER_ENABLE_DIFF_CONTEXT
 
   FML_DISALLOW_COPY_AND_ASSIGN(LayerTree);
 };

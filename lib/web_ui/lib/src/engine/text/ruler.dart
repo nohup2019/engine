@@ -2,11 +2,49 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.12
 part of engine;
+
+String _buildCssFontString({
+  required ui.FontStyle? fontStyle,
+  required ui.FontWeight? fontWeight,
+  required double? fontSize,
+  required String fontFamily,
+}) {
+  final StringBuffer result = StringBuffer();
+
+  // Font style
+  if (fontStyle != null) {
+    result.write(fontStyle == ui.FontStyle.normal ? 'normal' : 'italic');
+  } else {
+    result.write(DomRenderer.defaultFontStyle);
+  }
+  result.write(' ');
+
+  // Font weight.
+  if (fontWeight != null) {
+    result.write(fontWeightToCss(fontWeight));
+  } else {
+    result.write(DomRenderer.defaultFontWeight);
+  }
+  result.write(' ');
+
+  if (fontSize != null) {
+    result.write(fontSize.floor());
+  } else {
+    result.write(DomRenderer.defaultFontSize);
+  }
+  result.write('px ');
+  result.write(canonicalizeFontFamily(fontFamily));
+
+  return result.toString();
+}
 
 /// Contains the subset of [ui.ParagraphStyle] properties that affect layout.
 class ParagraphGeometricStyle {
   ParagraphGeometricStyle({
+    required this.textDirection,
+    required this.textAlign,
     this.fontWeight,
     this.fontStyle,
     this.fontFamily,
@@ -17,22 +55,26 @@ class ParagraphGeometricStyle {
     this.wordSpacing,
     this.decoration,
     this.ellipsis,
+    this.shadows,
   });
 
-  final ui.FontWeight fontWeight;
-  final ui.FontStyle fontStyle;
-  final String fontFamily;
-  final double fontSize;
-  final double lineHeight;
-  final int maxLines;
-  final double letterSpacing;
-  final double wordSpacing;
-  final String decoration;
-  final String ellipsis;
+  final ui.TextDirection textDirection;
+  final ui.TextAlign textAlign;
+  final ui.FontWeight? fontWeight;
+  final ui.FontStyle? fontStyle;
+  final String? fontFamily;
+  final double? fontSize;
+  final double? lineHeight;
+  final int? maxLines;
+  final double? letterSpacing;
+  final double? wordSpacing;
+  final String? decoration;
+  final String? ellipsis;
+  final List<ui.Shadow>? shadows;
 
   // Since all fields above are primitives, cache hashcode since ruler lookups
   // use this style as key.
-  int _cachedHashCode;
+  int? _cachedHashCode;
 
   /// Returns the font-family that should be used to style the paragraph. It may
   /// or may not be different from [fontFamily]:
@@ -47,73 +89,72 @@ class ParagraphGeometricStyle {
         return 'Ahem';
       }
     }
-    if (fontFamily == null || fontFamily.isEmpty) {
+    final String? localFontFamily = fontFamily;
+    if (localFontFamily == null || localFontFamily.isEmpty) {
       return DomRenderer.defaultFontFamily;
     }
-    return fontFamily;
+    return localFontFamily;
   }
 
-  String _cssFontString;
+  String? _cssFontString;
 
   /// Cached font string that can be used in CSS.
   ///
   /// See <https://developer.mozilla.org/en-US/docs/Web/CSS/font>.
-  String get cssFontString => _cssFontString ??= _buildCssFontString();
+  String get cssFontString {
+    return _cssFontString ??= _buildCssFontString(
+      fontStyle: fontStyle,
+      fontWeight: fontWeight,
+      fontSize: fontSize,
+      fontFamily: effectiveFontFamily,
+    );
+  }
 
-  String _buildCssFontString() {
-    final StringBuffer result = StringBuffer();
+  TextHeightStyle? _cachedHeightStyle;
 
-    // Font style
-    if (fontStyle != null) {
-      result.write(fontStyle == ui.FontStyle.normal ? 'normal' : 'italic');
-    } else {
-      result.write(DomRenderer.defaultFontStyle);
+  TextHeightStyle get textHeightStyle {
+    TextHeightStyle? style = _cachedHeightStyle;
+    if (style == null) {
+      style = TextHeightStyle(
+        fontFamily: effectiveFontFamily,
+        fontSize: fontSize ?? DomRenderer.defaultFontSize,
+        height: lineHeight,
+        // TODO(mdebbar): Pass the actual value when font features become supported
+        //                https://github.com/flutter/flutter/issues/64595
+        fontFeatures: null,
+      );
+      _cachedHeightStyle = style;
     }
-    result.write(' ');
-
-    // Font weight.
-    if (fontWeight != null) {
-      result.write(fontWeightToCss(fontWeight));
-    } else {
-      result.write(DomRenderer.defaultFontWeight);
-    }
-    result.write(' ');
-
-    if (fontSize != null) {
-      result.write(fontSize.floor());
-      result.write('px');
-    } else {
-      result.write(DomRenderer.defaultFontSize);
-    }
-    result.write(' ');
-    result.write(quoteFontFamily(effectiveFontFamily));
-
-    return result.toString();
+    return style;
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (identical(this, other)) {
       return true;
     }
     if (other.runtimeType != runtimeType) {
       return false;
     }
-    final ParagraphGeometricStyle typedOther = other;
-    return fontWeight == typedOther.fontWeight &&
-        fontStyle == typedOther.fontStyle &&
-        fontFamily == typedOther.fontFamily &&
-        fontSize == typedOther.fontSize &&
-        lineHeight == typedOther.lineHeight &&
-        maxLines == typedOther.maxLines &&
-        letterSpacing == typedOther.letterSpacing &&
-        wordSpacing == typedOther.wordSpacing &&
-        decoration == typedOther.decoration &&
-        ellipsis == typedOther.ellipsis;
+    return other is ParagraphGeometricStyle
+        && other.textDirection == textDirection
+        && other.textAlign == textAlign
+        && other.fontWeight == fontWeight
+        && other.fontStyle == fontStyle
+        && other.fontFamily == fontFamily
+        && other.fontSize == fontSize
+        && other.lineHeight == lineHeight
+        && other.maxLines == maxLines
+        && other.letterSpacing == letterSpacing
+        && other.wordSpacing == wordSpacing
+        && other.decoration == decoration
+        && other.ellipsis == ellipsis;
   }
 
   @override
   int get hashCode => _cachedHashCode ??= ui.hashValues(
+        textDirection,
+        textAlign,
         fontWeight,
         fontStyle,
         fontFamily,
@@ -129,7 +170,9 @@ class ParagraphGeometricStyle {
   @override
   String toString() {
     if (assertionsEnabled) {
-      return '$runtimeType(fontWeight: $fontWeight, fontStyle: $fontStyle,'
+      return '$runtimeType(textDirection: $textDirection, textAlign: $textAlign,'
+          ' fontWeight: $fontWeight,'
+          ' fontStyle: $fontStyle,'
           ' fontFamily: $fontFamily, fontSize: $fontSize,'
           ' lineHeight: $lineHeight,'
           ' maxLines: $maxLines,'
@@ -142,6 +185,40 @@ class ParagraphGeometricStyle {
       return super.toString();
     }
   }
+}
+
+/// Contains all styles that have an effect on the height of text.
+///
+/// This is useful as a cache key for [TextHeightRuler]. It's more efficient
+/// than using the entire [ParagraphGeometricStyle] as a cache key.
+class TextHeightStyle {
+  TextHeightStyle({
+    required this.fontFamily,
+    required this.fontSize,
+    required this.height,
+    required this.fontFeatures,
+  });
+
+  final String fontFamily;
+  final double fontSize;
+  final double? height;
+  final List<ui.FontFeature>? fontFeatures;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is TextHeightStyle && other.hashCode == hashCode;
+  }
+
+  @override
+  late final int hashCode = ui.hashValues(
+    fontFamily,
+    fontSize,
+    height,
+    ui.hashList(fontFeatures),
+  );
 }
 
 /// Provides text dimensions found on [_element]. The idea behind this class is
@@ -160,15 +237,15 @@ class TextDimensions {
   TextDimensions(this._element);
 
   final html.HtmlElement _element;
-  html.Rectangle<num> _cachedBoundingClientRect;
+  html.Rectangle<num>? _cachedBoundingClientRect;
 
   /// Attempts to efficiently copy text from [from].
   ///
   /// The primary efficiency gain is from rare occurrence of rich text in
   /// typical apps.
-  void updateText(EngineParagraph from, ParagraphGeometricStyle style) {
-    assert(from != null);
-    assert(_element != null);
+  void updateText(DomParagraph from, ParagraphGeometricStyle style) {
+    assert(from != null); // ignore: unnecessary_null_comparison
+    assert(_element != null); // ignore: unnecessary_null_comparison
     assert(from._debugHasSameRootStyle(style));
     assert(() {
       final bool wasEmptyOrPlainText = _element.childNodes.isEmpty ||
@@ -185,7 +262,7 @@ class TextDimensions {
     }());
 
     _invalidateBoundsCache();
-    final String plainText = from._plainText;
+    final String? plainText = from._plainText;
     if (plainText != null) {
       // Plain text: just set the string. The paragraph's style is assumed to
       // match the style set on the `element`. Setting text as plain string is
@@ -202,15 +279,31 @@ class TextDimensions {
     } else {
       // Rich text: deeply copy contents. This is the slow case that should be
       // avoided if fast layout performance is desired.
-      final html.Element copy = from._paragraphElement.clone(true);
-      _element.children.addAll(copy.children);
+      final html.Element copy = from._paragraphElement.clone(true) as html.Element;
+      _element.nodes.addAll(copy.nodes);
     }
   }
 
   /// Updated element style width.
-  void updateWidth(String cssWidth) {
+  void updateConstraintWidth(double width, String? ellipsis) {
     _invalidateBoundsCache();
-    _element.style.width = cssWidth;
+
+    if (width.isInfinite) {
+      _element.style
+        ..width = null
+        ..whiteSpace = 'pre';
+    } else if (ellipsis != null) {
+      // Width is finite, but we don't want to let the text soft-wrap when
+      // ellipsis overflow is enabled.
+      _element.style
+        ..width = '${width}px'
+        ..whiteSpace = 'pre';
+    } else {
+      // Width is finite and there's no ellipsis overflow.
+      _element.style
+        ..width = '${width}px'
+        ..whiteSpace = 'pre-wrap';
+    }
   }
 
   void _invalidateBoundsCache() {
@@ -225,9 +318,12 @@ class TextDimensions {
 
   /// Applies geometric style properties to the [element].
   void applyStyle(ParagraphGeometricStyle style) {
-    _element.style
-      ..fontSize = style.fontSize != null ? '${style.fontSize.floor()}px' : null
-      ..fontFamily = quoteFontFamily(style.effectiveFontFamily)
+    final html.CssStyleDeclaration elementStyle = _element.style;
+    elementStyle
+      ..direction = _textDirectionToCss(style.textDirection)
+      ..textAlign = textAlignToCssValue(style.textAlign, style.textDirection)
+      ..fontSize = style.fontSize != null ? '${style.fontSize!.floor()}px' : null
+      ..fontFamily = canonicalizeFontFamily(style.effectiveFontFamily)
       ..fontWeight =
           style.fontWeight != null ? fontWeightToCss(style.fontWeight) : null
       ..fontStyle = style.fontStyle != null
@@ -236,15 +332,36 @@ class TextDimensions {
       ..letterSpacing =
           style.letterSpacing != null ? '${style.letterSpacing}px' : null
       ..wordSpacing =
-          style.wordSpacing != null ? '${style.wordSpacing}px' : null
-      ..textDecoration = style.decoration;
+          style.wordSpacing != null ? '${style.wordSpacing}px' : null;
+    final String? decoration = style.decoration;
+    if (browserEngine == BrowserEngine.webkit) {
+      DomRenderer.setElementStyle(
+          _element, '-webkit-text-decoration', decoration);
+    } else {
+      elementStyle.textDecoration = decoration;
+    }
     if (style.lineHeight != null) {
-      _element.style.lineHeight = style.lineHeight.toString();
+      elementStyle.lineHeight = style.lineHeight!.toString();
     }
     _invalidateBoundsCache();
   }
 
-  /// Appends element and probe to hostElement that is setup for a specific
+  void applyHeightStyle(TextHeightStyle textHeightStyle) {
+    final String fontFamily = textHeightStyle.fontFamily;
+    final double fontSize = textHeightStyle.fontSize;
+    final html.CssStyleDeclaration style = _element.style;
+    style
+      ..fontSize = '${fontSize.floor()}px'
+      ..fontFamily = canonicalizeFontFamily(fontFamily);
+
+    final double? height = textHeightStyle.height;
+    if (height != null) {
+      style.lineHeight = height.toString();
+    }
+    _invalidateBoundsCache();
+  }
+
+  /// Appends element and probe to hostElement that is set up for a specific
   /// TextStyle.
   void appendToHost(html.HtmlElement hostElement) {
     hostElement.append(_element);
@@ -255,10 +372,89 @@ class TextDimensions {
       _cachedBoundingClientRect ??= _element.getBoundingClientRect();
 
   /// The width of the paragraph being measured.
-  double get width => _readAndCacheMetrics().width;
+  double get width => _readAndCacheMetrics().width as double;
 
   /// The height of the paragraph being measured.
-  double get height => _readAndCacheMetrics().height;
+  double get height {
+    double cachedHeight = _readAndCacheMetrics().height as double;
+    if (browserEngine == BrowserEngine.firefox &&
+      // In the flutter tester environment, we use a predictable-size for font
+      // measurement tests.
+      !ui.debugEmulateFlutterTesterEnvironment) {
+      // See subpixel rounding bug :
+      // https://bugzilla.mozilla.org/show_bug.cgi?id=442139
+      // This causes bottom of letters such as 'y' to be cutoff and
+      // incorrect rendering of double underlines.
+      cachedHeight += 1.0;
+    }
+    return cachedHeight;
+  }
+}
+
+/// Performs height measurement for the given [textHeightStyle].
+///
+/// The two results of this ruler's measurement are:
+///
+/// 1. [alphabeticBaseline].
+/// 2. [height].
+class TextHeightRuler {
+  TextHeightRuler(this.textHeightStyle, this.rulerHost);
+
+  final TextHeightStyle textHeightStyle;
+  final RulerHost rulerHost;
+
+  // Elements used to measure the line-height metric.
+  late final html.HtmlElement _probe = _createProbe();
+  late final html.HtmlElement _host = _createHost();
+  final TextDimensions _dimensions = TextDimensions(html.ParagraphElement());
+
+  /// The alphabetic baseline for this ruler's [textHeightStyle].
+  late final double alphabeticBaseline = _probe.getBoundingClientRect().bottom.toDouble();
+
+  /// The height for this ruler's [textHeightStyle].
+  late final double height = _dimensions.height;
+
+  /// Disposes of this ruler and detaches it from the DOM tree.
+  void dispose() {
+    _host.remove();
+  }
+
+  html.HtmlElement _createHost() {
+    final html.DivElement host = html.DivElement();
+    host.style
+      ..visibility = 'hidden'
+      ..position = 'absolute'
+      ..top = '0'
+      ..left = '0'
+      ..display = 'flex'
+      ..flexDirection = 'row'
+      ..alignItems = 'baseline'
+      ..margin = '0'
+      ..border = '0'
+      ..padding = '0';
+
+    if (assertionsEnabled) {
+      host.setAttribute('data-ruler', 'line-height');
+    }
+
+    _dimensions.applyHeightStyle(textHeightStyle);
+
+    // Force single-line (even if wider than screen) and preserve whitespaces.
+    _dimensions._element.style.whiteSpace = 'pre';
+
+    // To measure line-height, all we need is a whitespace.
+    _dimensions.updateTextToSpace();
+
+    _dimensions.appendToHost(host);
+    rulerHost.addElement(host);
+    return host;
+  }
+
+  html.HtmlElement _createProbe() {
+    final html.HtmlElement probe = html.DivElement();
+    _host.append(probe);
+    return probe;
+  }
 }
 
 /// Performs 4 types of measurements:
@@ -313,25 +509,14 @@ class ParagraphRuler {
   /// but a [ParagraphRuler] can only belong to one [RulerManager].
   final RulerManager rulerManager;
 
-  /// Probe to use for measuring alphabetic base line.
-  final html.HtmlElement _probe = html.DivElement();
-
-  /// Cached value of alphabetic base line.
-  double _cachedAlphabeticBaseline;
-
   ParagraphRuler(this.style, this.rulerManager) {
     _configureSingleLineHostElements();
-    // Since alphabeticbaseline will be same regardless of constraints.
-    // We can measure it using a probe on the single line dimensions
-    // host.
-    _singleLineHost.append(_probe);
     _configureMinIntrinsicHostElements();
     _configureConstrainedHostElements();
   }
 
   /// The alphabetic baseline of the paragraph being measured.
-  double get alphabeticBaseline =>
-      _cachedAlphabeticBaseline ??= _probe.getBoundingClientRect().bottom;
+  double get alphabeticBaseline => _textHeightRuler.alphabeticBaseline;
 
   // Elements used to measure single-line metrics.
   final html.DivElement _singleLineHost = html.DivElement();
@@ -349,18 +534,10 @@ class ParagraphRuler {
       TextDimensions(html.ParagraphElement());
 
   // Elements used to measure the line-height metric.
-  html.DivElement _lineHeightHost;
-  TextDimensions _lineHeightDimensions;
-  TextDimensions get lineHeightDimensions {
-    // Lazily create the elements for line-height measurement since they are not
-    // always needed.
-    if (_lineHeightDimensions == null) {
-      _lineHeightHost = html.DivElement();
-      _lineHeightDimensions = TextDimensions(html.ParagraphElement());
-      _configureLineHeightHostElements();
-      _lineHeightHost.append(_probe);
-    }
-    return _lineHeightDimensions;
+  late final TextHeightRuler _textHeightRuler =
+      TextHeightRuler(style.textHeightStyle, rulerManager);
+  double get lineHeight {
+    return _textHeightRuler.height;
   }
 
   /// The number of times this ruler was used this frame.
@@ -403,13 +580,17 @@ class ParagraphRuler {
       ..border = '0'
       ..padding = '0';
 
+    if (assertionsEnabled) {
+      _singleLineHost.setAttribute('data-ruler', 'single-line');
+    }
+
     singleLineDimensions.applyStyle(style);
 
     // Force single-line (even if wider than screen) and preserve whitespaces.
     singleLineDimensions._element.style.whiteSpace = 'pre';
 
     singleLineDimensions.appendToHost(_singleLineHost);
-    rulerManager.addHostElement(_singleLineHost);
+    rulerManager.addElement(_singleLineHost);
   }
 
   void _configureMinIntrinsicHostElements() {
@@ -425,6 +606,10 @@ class ParagraphRuler {
       ..border = '0'
       ..padding = '0';
 
+    if (assertionsEnabled) {
+      _minIntrinsicHost.setAttribute('data-ruler', 'min-intrinsic');
+    }
+
     minIntrinsicDimensions.applyStyle(style);
 
     // "flex: 0" causes the paragraph element to shrink horizontally, exposing
@@ -438,7 +623,7 @@ class ParagraphRuler {
       ..whiteSpace = 'pre-line';
 
     _minIntrinsicHost.append(minIntrinsicDimensions._element);
-    rulerManager.addHostElement(_minIntrinsicHost);
+    rulerManager.addElement(_minIntrinsicHost);
   }
 
   void _configureConstrainedHostElements() {
@@ -454,6 +639,10 @@ class ParagraphRuler {
       ..border = '0'
       ..padding = '0';
 
+    if (assertionsEnabled) {
+      _constrainedHost.setAttribute('data-ruler', 'constrained');
+    }
+
     constrainedDimensions.applyStyle(style);
     final html.CssStyleDeclaration elementStyle =
         constrainedDimensions._element.style;
@@ -461,58 +650,24 @@ class ParagraphRuler {
       ..display = 'block'
       ..overflowWrap = 'break-word';
 
-    // TODO(flutter_web): Implement the ellipsis overflow for multi-line text
-    // too. As a pre-requisite, we need to be able to programmatically find
-    // line breaks.
-    if (style.ellipsis == null) {
-      elementStyle.whiteSpace = 'pre-wrap';
-    } else {
-      // The height measurement is affected by whether the text has the ellipsis
-      // overflow property or not. This is because when ellipsis is set, we may
-      // not render all the lines, but stop at the first line that overflows.
+    if (style.ellipsis != null) {
       elementStyle
-        ..whiteSpace = 'pre'
         ..overflow = 'hidden'
         ..textOverflow = 'ellipsis';
     }
 
     constrainedDimensions.appendToHost(_constrainedHost);
-    rulerManager.addHostElement(_constrainedHost);
-  }
-
-  void _configureLineHeightHostElements() {
-    _lineHeightHost.style
-      ..visibility = 'hidden'
-      ..position = 'absolute'
-      ..top = '0'
-      ..left = '0'
-      ..display = 'flex'
-      ..flexDirection = 'row'
-      ..alignItems = 'baseline'
-      ..margin = '0'
-      ..border = '0'
-      ..padding = '0';
-
-    lineHeightDimensions.applyStyle(style);
-
-    // Force single-line (even if wider than screen) and preserve whitespaces.
-    lineHeightDimensions._element.style.whiteSpace = 'pre';
-
-    // To measure line-height, all we need is a whitespace.
-    lineHeightDimensions.updateTextToSpace();
-
-    lineHeightDimensions.appendToHost(_lineHeightHost);
-    rulerManager.addHostElement(_lineHeightHost);
+    rulerManager.addElement(_constrainedHost);
   }
 
   /// The paragraph being measured.
-  EngineParagraph _paragraph;
+  DomParagraph? _paragraph;
 
   /// Prepares this ruler for measuring the given [paragraph].
   ///
   /// This method must be called before calling any of the `measure*` methods.
-  void willMeasure(EngineParagraph paragraph) {
-    assert(paragraph != null);
+  void willMeasure(DomParagraph paragraph) {
+    assert(paragraph != null); // ignore: unnecessary_null_comparison
     assert(() {
       if (_paragraph != null) {
         throw Exception(
@@ -547,10 +702,10 @@ class ParagraphRuler {
     // which doesn't work. So we need to replace it with a whitespace. The
     // correct fix would be to do line height and baseline measurements and
     // cache them separately.
-    if (_paragraph._plainText == '') {
+    if (_paragraph!._plainText == '') {
       singleLineDimensions.updateTextToSpace();
     } else {
-      singleLineDimensions.updateText(_paragraph, style);
+      singleLineDimensions.updateText(_paragraph!, style);
     }
   }
 
@@ -562,7 +717,7 @@ class ParagraphRuler {
     assert(!_debugIsDisposed);
     assert(_paragraph != null);
 
-    minIntrinsicDimensions.updateText(_paragraph, style);
+    minIntrinsicDimensions.updateText(_paragraph!, style);
   }
 
   /// Lays out the paragraph giving it a width constraint.
@@ -572,12 +727,40 @@ class ParagraphRuler {
     assert(!_debugIsDisposed);
     assert(_paragraph != null);
 
-    constrainedDimensions.updateText(_paragraph, style);
+    constrainedDimensions.updateText(_paragraph!, style);
 
     // The extra 0.5 is because sometimes the browser needs slightly more space
     // than the size it reports back. When that happens the text may be wrap
     // when we thought it didn't.
-    constrainedDimensions.updateWidth('${constraints.width + 0.5}px');
+    constrainedDimensions.updateConstraintWidth(
+      constraints.width + 0.5,
+      style.ellipsis,
+    );
+  }
+
+  List<ui.TextBox> measurePlaceholderBoxes() {
+    assert(!_debugIsDisposed);
+    assert(_paragraph != null);
+
+    if (_paragraph!.placeholderCount == 0) {
+      return const <ui.TextBox>[];
+    }
+
+    final List<html.Element> placeholderElements =
+        constrainedDimensions._element.querySelectorAll('.$_placeholderClass');
+    final List<ui.TextBox> boxes = <ui.TextBox>[];
+
+    for (final html.Element element in placeholderElements) {
+      final html.Rectangle<num> rect = element.getBoundingClientRect();
+      boxes.add(ui.TextBox.fromLTRBD(
+        rect.left as double,
+        rect.top as double,
+        rect.right as double,
+        rect.bottom as double,
+        _paragraph!._textDirection,
+      ));
+    }
+    return boxes;
   }
 
   /// Returns text position in a paragraph that contains multiple
@@ -596,35 +779,50 @@ class ParagraphRuler {
       final html.Node node = textNodes[i];
       // Check if offset is within client rect bounds of text node's
       // parent element.
-      final html.Element parent = node.parentNode;
+      final html.Element parent = node.parentNode as html.Element;
       final html.Rectangle<num> bounds = parent.getBoundingClientRect();
       final double dx = offset.dx;
       final double dy = offset.dy;
       if (dx >= bounds.left &&
-          dy < bounds.right &&
+          dx < bounds.right &&
           dy >= bounds.top &&
           dy < bounds.bottom) {
         // We found the element bounds that contains offset.
         // Calculate text position for this node.
-        int textPosition = 0;
-        for (int nodeIndex = 0; nodeIndex < i; nodeIndex++) {
-          textPosition += textNodes[nodeIndex].text.length;
-        }
-        return textPosition;
+        return _countTextPosition(el.childNodes, textNodes[i]);
       }
     }
     return 0;
   }
 
   void _collectTextNodes(Iterable<html.Node> nodes, List<html.Node> textNodes) {
+    if (nodes.isEmpty) {
+      return;
+    }
+    final List<html.Node> childNodes = [];
     for (html.Node node in nodes) {
       if (node.nodeType == html.Node.TEXT_NODE) {
         textNodes.add(node);
       }
-      if (node.hasChildNodes()) {
-        _collectTextNodes(node.childNodes, textNodes);
+      childNodes.addAll(node.childNodes);
+    }
+    _collectTextNodes(childNodes, textNodes);
+  }
+
+  int _countTextPosition(List<html.Node> nodes, html.Node endNode) {
+    int position = 0;
+    final List<html.Node> stack = nodes.reversed.toList();
+    while (true) {
+      var node = stack.removeLast();
+      stack.addAll(node.childNodes.reversed);
+      if (node == endNode) {
+        break;
+      }
+      if (node.nodeType == html.Node.TEXT_NODE) {
+        position += node.text!.length;
       }
     }
+    return position;
   }
 
   /// Performs clean-up after a measurement is done, preparing this ruler for
@@ -645,7 +843,7 @@ class ParagraphRuler {
     //
     // We do not do this for plain text, because replacing plain text is more
     // expensive than paying the cost of the DOM mutation to clean it.
-    if (_paragraph._plainText == null) {
+    if (_paragraph!._plainText == null) {
       domRenderer
         ..clearDom(singleLineDimensions._element)
         ..clearDom(minIntrinsicDimensions._element)
@@ -661,10 +859,10 @@ class ParagraphRuler {
   List<ui.TextBox> measureBoxesForRange(
     String plainText,
     ui.ParagraphConstraints constraints, {
-    int start,
-    int end,
-    double alignOffset,
-    ui.TextDirection textDirection,
+    required int start,
+    required int end,
+    required double alignOffset,
+    required ui.TextDirection textDirection,
   }) {
     assert(!_debugIsDisposed);
     assert(start >= 0 && start <= plainText.length);
@@ -683,20 +881,36 @@ class ParagraphRuler {
       ..appendText(before)
       ..append(rangeSpan)
       ..appendText(after);
-    constrainedDimensions.updateWidth('${constraints.width}px');
+    constrainedDimensions.updateConstraintWidth(constraints.width, null);
 
     // Measure the rects of [rangeSpan].
     final List<html.Rectangle<num>> clientRects = rangeSpan.getClientRects();
     final List<ui.TextBox> boxes = <ui.TextBox>[];
 
+    final double maxLinesLimit = style.maxLines == null
+        ? double.infinity
+        : style.maxLines! * lineHeight;
+
+    html.Rectangle<num>? previousRect;
     for (html.Rectangle<num> rect in clientRects) {
+      // If [rect] is an empty box on the same line as the previous box, don't
+      // include it in the result.
+      if (rect.top == previousRect?.top && rect.left == rect.right) {
+        continue;
+      }
+      // As soon as we go beyond [maxLines], stop adding boxes.
+      if (rect.top >= maxLinesLimit) {
+        break;
+      }
+
       boxes.add(ui.TextBox.fromLTRBD(
-        rect.left + alignOffset,
-        rect.top,
-        rect.right + alignOffset,
-        rect.bottom,
+        rect.left.toDouble() + alignOffset,
+        rect.top as double,
+        rect.right.toDouble() + alignOffset,
+        rect.bottom as double,
         textDirection,
       ));
+      previousRect = rect;
     }
 
     // Cleanup after measuring the boxes.
@@ -719,7 +933,7 @@ class ParagraphRuler {
     _singleLineHost.remove();
     _minIntrinsicHost.remove();
     _constrainedHost.remove();
-    _lineHeightHost?.remove();
+    _textHeightRuler.dispose();
     assert(() {
       _debugIsDisposed = true;
       return true;
@@ -727,10 +941,10 @@ class ParagraphRuler {
   }
 
   // Bounded cache for text measurement for a particular width constraint.
-  Map<String, List<MeasurementResult>> _measurementCache =
-      <String, List<MeasurementResult>>{};
+  Map<String?, List<MeasurementResult?>> _measurementCache =
+      <String?, List<MeasurementResult?>>{};
   // Mru list for cache.
-  final List<String> _mruList = <String>[];
+  final List<String?> _mruList = <String?>[];
   static const int _cacheLimit = 2400;
   // Number of items to evict when cache limit is reached.
   static const int _cacheBlockFactor = 100;
@@ -739,10 +953,10 @@ class ParagraphRuler {
   // is changing.
   static const int _constraintCacheSize = 8;
 
-  void cacheMeasurement(EngineParagraph paragraph, MeasurementResult item) {
-    final String plainText = paragraph._plainText;
-    final List<MeasurementResult> constraintCache =
-        _measurementCache[plainText] ??= <MeasurementResult>[];
+  void cacheMeasurement(DomParagraph paragraph, MeasurementResult? item) {
+    final String? plainText = paragraph._plainText;
+    final List<MeasurementResult?> constraintCache =
+        _measurementCache[plainText] ??= <MeasurementResult?>[];
     constraintCache.add(item);
     if (constraintCache.length > _constraintCacheSize) {
       constraintCache.removeAt(0);
@@ -757,22 +971,24 @@ class ParagraphRuler {
     }
   }
 
-  MeasurementResult cacheLookup(
-      EngineParagraph paragraph, ui.ParagraphConstraints constraints) {
-    final String plainText = paragraph._plainText;
+  MeasurementResult? cacheLookup(
+      DomParagraph paragraph, ui.ParagraphConstraints constraints) {
+    final String? plainText = paragraph._plainText;
     if (plainText == null) {
       // Multi span paragraph, do not use cache item.
       return null;
     }
-    final List<MeasurementResult> constraintCache =
-    _measurementCache[plainText];
+    final List<MeasurementResult?>? constraintCache =
+        _measurementCache[plainText];
     if (constraintCache == null) {
       return null;
     }
     final int len = constraintCache.length;
     for (int i = 0; i < len; i++) {
-      final MeasurementResult item = constraintCache[i];
-      if (item.constraintWidth == constraints.width) {
+      final MeasurementResult item = constraintCache[i]!;
+      if (item.constraintWidth == constraints.width &&
+          item.textAlign == paragraph._textAlign &&
+          item.textDirection == paragraph._textDirection) {
         return item;
       }
     }
@@ -806,7 +1022,7 @@ class MeasurementResult {
   ///
   /// In some cases, measuring [lineHeight] is unnecessary, so it's nullable. If
   /// present, it should be equal to [height] when [isSingleLine] is true.
-  final double lineHeight;
+  final double? lineHeight;
 
   /// {@macro dart.ui.paragraph.minIntrinsicWidth}
   final double minIntrinsicWidth;
@@ -820,29 +1036,42 @@ class MeasurementResult {
   /// {@macro dart.ui.paragraph.ideographicBaseline}
   final double ideographicBaseline;
 
-  /// Substrings that represent how the text should wrap into multiple lines to
-  /// satisfy [constraintWidth],
-  final List<String> lines;
+  /// The full list of [EngineLineMetrics] that describe in detail the various metrics
+  /// of each laid out line.
+  final List<EngineLineMetrics>? lines;
 
-  const MeasurementResult(
+  final List<ui.TextBox> placeholderBoxes;
+
+  /// The text align value of the paragraph.
+  final ui.TextAlign textAlign;
+
+  /// The text direction of the paragraph.
+  final ui.TextDirection textDirection;
+
+  MeasurementResult(
     this.constraintWidth, {
-    @required this.isSingleLine,
-    @required this.width,
-    @required this.height,
-    @required this.naturalHeight,
-    @required this.lineHeight,
-    @required this.minIntrinsicWidth,
-    @required this.maxIntrinsicWidth,
-    @required this.alphabeticBaseline,
-    @required this.ideographicBaseline,
-    @required this.lines,
-  })  : assert(constraintWidth != null),
-        assert(isSingleLine != null),
-        assert(width != null),
-        assert(height != null),
-        assert(naturalHeight != null),
-        assert(minIntrinsicWidth != null),
-        assert(maxIntrinsicWidth != null),
-        assert(alphabeticBaseline != null),
-        assert(ideographicBaseline != null);
+    required this.isSingleLine,
+    required this.width,
+    required this.height,
+    required this.naturalHeight,
+    required this.lineHeight,
+    required this.minIntrinsicWidth,
+    required this.maxIntrinsicWidth,
+    required this.alphabeticBaseline,
+    required this.ideographicBaseline,
+    required this.lines,
+    required this.placeholderBoxes,
+    required ui.TextAlign? textAlign,
+    required ui.TextDirection? textDirection,
+  })  : assert(constraintWidth != null), // ignore: unnecessary_null_comparison
+        assert(isSingleLine != null), // ignore: unnecessary_null_comparison
+        assert(width != null), // ignore: unnecessary_null_comparison
+        assert(height != null), // ignore: unnecessary_null_comparison
+        assert(naturalHeight != null), // ignore: unnecessary_null_comparison
+        assert(minIntrinsicWidth != null), // ignore: unnecessary_null_comparison
+        assert(maxIntrinsicWidth != null), // ignore: unnecessary_null_comparison
+        assert(alphabeticBaseline != null), // ignore: unnecessary_null_comparison
+        assert(ideographicBaseline != null), // ignore: unnecessary_null_comparison
+        this.textAlign = textAlign ?? ui.TextAlign.start,
+        this.textDirection = textDirection ?? ui.TextDirection.ltr;
 }

@@ -2,15 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart=2.8
 library flutter_frontend_server;
 
 import 'dart:async';
 import 'dart:io' hide FileSystemEntity;
 
 import 'package:args/args.dart';
-import 'package:path/path.dart' as path;
-
-import 'package:vm/incremental_compiler.dart';
 import 'package:frontend_server/frontend_server.dart' as frontend
     show
         FrontendCompiler,
@@ -18,7 +16,10 @@ import 'package:frontend_server/frontend_server.dart' as frontend
         listenAndCompile,
         argParser,
         usage,
-        ProgramTransformer;
+        ProgramTransformer,
+        ToStringTransformer;
+import 'package:path/path.dart' as path;
+import 'package:vm/incremental_compiler.dart';
 
 /// Wrapper around [FrontendCompiler] that adds [widgetCreatorTracker] kernel
 /// transformation to the compilation.
@@ -27,9 +28,13 @@ class _FlutterFrontendCompiler implements frontend.CompilerInterface {
 
   _FlutterFrontendCompiler(StringSink output,
       {bool unsafePackageSerialization,
+      bool useDebuggerModuleNames,
+      bool emitDebugMetadata,
       frontend.ProgramTransformer transformer})
       : _compiler = frontend.FrontendCompiler(output,
             transformer: transformer,
+            useDebuggerModuleNames: useDebuggerModuleNames,
+            emitDebugMetadata: emitDebugMetadata,
             unsafePackageSerialization: unsafePackageSerialization);
 
   @override
@@ -71,6 +76,19 @@ class _FlutterFrontendCompiler implements frontend.CompilerInterface {
   }
 
   @override
+  Future<Null> compileExpressionToJs(
+      String libraryUri,
+      int line,
+      int column,
+      Map<String, String> jsModules,
+      Map<String, String> jsFrameValues,
+      String moduleName,
+      String expression) {
+    return _compiler.compileExpressionToJs(libraryUri, line, column, jsModules,
+        jsFrameValues, moduleName, expression);
+  }
+
+  @override
   void reportError(String msg) {
     _compiler.reportError(msg);
   }
@@ -93,6 +111,13 @@ Future<int> starter(
   frontend.ProgramTransformer transformer,
 }) async {
   ArgResults options;
+  frontend.argParser.addMultiOption(
+    'delete-tostring-package-uri',
+    help: 'Replaces implementations of `toString` with `super.toString()` for '
+          'specified package',
+    valueHelp: 'dart:ui',
+    defaultsTo: const <String>[],
+  );
   try {
     options = frontend.argParser.parse(args);
   } catch (error) {
@@ -101,13 +126,15 @@ Future<int> starter(
     return 1;
   }
 
-  if (options['train']) {
+  final Set<String> deleteToStringPackageUris = (options['delete-tostring-package-uri'] as List<String>).toSet();
+
+  if (options['train'] as bool) {
     if (!options.rest.isNotEmpty) {
       throw Exception('Must specify input.dart');
     }
 
     final String input = options.rest[0];
-    final String sdkRoot = options['sdk-root'];
+    final String sdkRoot = options['sdk-root'] as String;
     final Directory temp =
         Directory.systemTemp.createTempSync('train_frontend_server');
     try {
@@ -120,10 +147,11 @@ Future<int> starter(
           '--target=flutter',
           '--track-widget-creation',
           '--enable-asserts',
-          '--gen-bytecode',
-          '--bytecode-options=source-positions,local-var-info,debugger-stops,instance-field-initializers,keep-unreachable-code,avoid-closure-call-instructions',
         ]);
-        compiler ??= _FlutterFrontendCompiler(output);
+        compiler ??= _FlutterFrontendCompiler(
+          output,
+          transformer: frontend.ToStringTransformer(null, deleteToStringPackageUris),
+        );
 
         await compiler.compile(input, options);
         compiler.acceptLastDelta();
@@ -142,8 +170,11 @@ Future<int> starter(
   }
 
   compiler ??= _FlutterFrontendCompiler(output,
-      transformer: transformer,
-      unsafePackageSerialization: options['unsafe-package-serialization']);
+      transformer: frontend.ToStringTransformer(transformer, deleteToStringPackageUris),
+      useDebuggerModuleNames: options['debugger-module-names'] as bool,
+      emitDebugMetadata: options['experimental-emit-debug-metadata'] as bool,
+      unsafePackageSerialization:
+          options['unsafe-package-serialization'] as bool);
 
   if (options.rest.isNotEmpty) {
     return await compiler.compile(options.rest[0], options) ? 0 : 254;

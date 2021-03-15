@@ -2,16 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.12
 part of engine;
 
 const bool _debugLogHistoryActions = false;
 
-class _HistoryEntry {
+class TestHistoryEntry {
   final dynamic state;
-  final String title;
+  final String? title;
   final String url;
 
-  const _HistoryEntry(this.state, this.title, this.url);
+  const TestHistoryEntry(this.state, this.title, this.url);
 
   @override
   String toString() {
@@ -19,30 +20,39 @@ class _HistoryEntry {
   }
 }
 
-/// This location strategy mimics the browser's history as closely as possible
+/// This URL strategy mimics the browser's history as closely as possible
 /// while doing it all in memory with no interaction with the browser.
 ///
 /// It keeps a list of history entries and event listeners in memory and
 /// manipulates them in order to achieve the desired functionality.
-class TestLocationStrategy extends LocationStrategy {
-  /// Passing a [defaultRouteName] will make the app start at that route. The
-  /// way it does it is by using it as a path on the first history entry.
-  TestLocationStrategy([String defaultRouteName = ''])
+class TestUrlStrategy extends UrlStrategy {
+  /// Creates a instance of [TestUrlStrategy] with an empty string as the
+  /// path.
+  factory TestUrlStrategy() => TestUrlStrategy.fromEntry(TestHistoryEntry(null, null, ''));
+
+  /// Creates an instance of [TestUrlStrategy] and populates it with a list
+  /// that has [initialEntry] as the only item.
+  TestUrlStrategy.fromEntry(TestHistoryEntry initialEntry)
       : _currentEntryIndex = 0,
-        history = <_HistoryEntry>[_HistoryEntry(null, null, defaultRouteName)];
+        history = <TestHistoryEntry>[initialEntry];
 
   @override
-  String get path => ensureLeading(currentEntry.url, '/');
+  String getPath() => currentEntry.url;
+
+  @override
+  dynamic getState() => currentEntry.state;
 
   int _currentEntryIndex;
-  final List<_HistoryEntry> history;
+  int get currentEntryIndex => _currentEntryIndex;
 
-  _HistoryEntry get currentEntry {
+  final List<TestHistoryEntry> history;
+
+  TestHistoryEntry get currentEntry {
     assert(withinAppHistory);
     return history[_currentEntryIndex];
   }
 
-  set currentEntry(_HistoryEntry entry) {
+  set currentEntry(TestHistoryEntry entry) {
     assert(withinAppHistory);
     history[_currentEntryIndex] = entry;
   }
@@ -62,7 +72,7 @@ class TestLocationStrategy extends LocationStrategy {
     // If the user goes A -> B -> C -> D, then goes back to B and pushes a new
     // entry called E, we should end up with: A -> B -> E in the history list.
     history.removeRange(_currentEntryIndex, history.length);
-    history.add(_HistoryEntry(state, title, url));
+    history.add(TestHistoryEntry(state, title, url));
 
     if (_debugLogHistoryActions) {
       print('$runtimeType.pushState(...) -> $this');
@@ -70,9 +80,12 @@ class TestLocationStrategy extends LocationStrategy {
   }
 
   @override
-  void replaceState(dynamic state, String title, String url) {
+  void replaceState(dynamic state, String title, String? url) {
     assert(withinAppHistory);
-    currentEntry = _HistoryEntry(state, title, url);
+    if (url == null || url == '') {
+      url = currentEntry.url;
+    }
+    currentEntry = TestHistoryEntry(state, title, url);
 
     if (_debugLogHistoryActions) {
       print('$runtimeType.replaceState(...) -> $this');
@@ -90,12 +103,12 @@ class TestLocationStrategy extends LocationStrategy {
   }
 
   @override
-  Future<void> back() {
+  Future<void> go(int count) {
     assert(withinAppHistory);
-    // Browsers don't move back in history immediately. They do it at the next
+    // Browsers don't move in history immediately. They do it at the next
     // event loop. So let's simulate that.
     return _nextEventLoop(() {
-      _currentEntryIndex--;
+      _currentEntryIndex = _currentEntryIndex + count;
       if (withinAppHistory) {
         _firePopStateEvent();
       }
@@ -109,7 +122,7 @@ class TestLocationStrategy extends LocationStrategy {
   final List<html.EventListener> listeners = <html.EventListener>[];
 
   @override
-  ui.VoidCallback onPopState(html.EventListener fn) {
+  ui.VoidCallback addPopStateListener(html.EventListener fn) {
     listeners.add(fn);
     return () {
       // Schedule a micro task here to avoid removing the listener during
@@ -147,10 +160,10 @@ class TestLocationStrategy extends LocationStrategy {
 
   @override
   String toString() {
-    final List<String> lines = List<String>(history.length);
+    final List<String> lines = <String>[];
     for (int i = 0; i < history.length; i++) {
-      final _HistoryEntry entry = history[i];
-      lines[i] = _currentEntryIndex == i ? '* $entry' : '  $entry';
+      final TestHistoryEntry entry = history[i];
+      lines.add(_currentEntryIndex == i ? '* $entry' : '  $entry');
     }
     return '$runtimeType: [\n${lines.join('\n')}\n]';
   }

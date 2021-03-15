@@ -87,9 +87,11 @@ flutter:
     ffi:
       uri: "../../../third_party/dart/sdk/lib/ffi/ffi.dart"
       patches:
+        - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_patch.dart"
+        - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_allocation_patch.dart"
         - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_dynamic_library_patch.dart"
         - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_native_type_patch.dart"
-        - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_patch.dart"
+        - "../../../third_party/dart/sdk/lib/_internal/vm/lib/ffi_struct_patch.dart"
 
     wasm:
       uri: "../../../third_party/dart/sdk/lib/wasm/wasm.dart"
@@ -151,4 +153,4 @@ flutter:
       uri: "../../../third_party/dart/sdk/lib/vmservice/vmservice.dart"
 
     vmservice_io:
-      uri: "../../../third_party/dart/runtime/bin/vmservice/vmservice_io.dart"
+      uri: "../../../third_party/dart/sdk/lib/_internal/vm/bin/vmservice_io.dart"

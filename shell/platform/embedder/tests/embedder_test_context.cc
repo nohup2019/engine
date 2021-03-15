@@ -4,8 +4,11 @@
 
 #include "flutter/shell/platform/embedder/tests/embedder_test_context.h"
 
+#include "flutter/fml/make_copyable.h"
+#include "flutter/fml/paths.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/shell/platform/embedder/tests/embedder_assertions.h"
+#include "flutter/testing/testing.h"
 #include "third_party/dart/runtime/bin/elf_loader.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
@@ -14,38 +17,10 @@ namespace testing {
 
 EmbedderTestContext::EmbedderTestContext(std::string assets_path)
     : assets_path_(std::move(assets_path)),
+      aot_symbols_(LoadELFSymbolFromFixturesIfNeccessary()),
       native_resolver_(std::make_shared<TestDartNativeResolver>()) {
-  auto assets_dir = fml::OpenDirectory(assets_path_.c_str(), false,
-                                       fml::FilePermission::kRead);
-
-  if (flutter::DartVM::IsRunningPrecompiledCode()) {
-    std::string filename(assets_path_);
-    filename += "/app_elf_snapshot.so";
-
-    const uint8_t *vm_snapshot_data = nullptr,
-                  *vm_snapshot_instructions = nullptr,
-                  *isolate_snapshot_data = nullptr,
-                  *isolate_snapshot_instructions = nullptr;
-    const char* error = nullptr;
-
-    elf_library_handle_ =
-        Dart_LoadELF(filename.c_str(), /*file_offset=*/0, &error,
-                     &vm_snapshot_data, &vm_snapshot_instructions,
-                     &isolate_snapshot_data, &isolate_snapshot_instructions);
-
-    if (elf_library_handle_ != nullptr) {
-      vm_snapshot_data_.reset(new fml::NonOwnedMapping(vm_snapshot_data, 0));
-      vm_snapshot_instructions_.reset(
-          new fml::NonOwnedMapping(vm_snapshot_instructions, 0));
-      isolate_snapshot_data_.reset(
-          new fml::NonOwnedMapping(isolate_snapshot_data, 0));
-      isolate_snapshot_instructions_.reset(
-          new fml::NonOwnedMapping(isolate_snapshot_instructions, 0));
-    } else {
-      FML_LOG(WARNING) << "Could not load snapshot: " << error;
-    }
-  }
-
+  SetupAOTMappingsIfNecessary();
+  SetupAOTDataIfNecessary();
   isolate_create_callbacks_.push_back(
       [weak_resolver =
            std::weak_ptr<TestDartNativeResolver>{native_resolver_}]() {
@@ -55,10 +30,38 @@ EmbedderTestContext::EmbedderTestContext(std::string assets_path)
       });
 }
 
-EmbedderTestContext::~EmbedderTestContext() {
-  if (elf_library_handle_ != nullptr) {
-    Dart_UnloadELF(elf_library_handle_);
+EmbedderTestContext::~EmbedderTestContext() = default;
+
+void EmbedderTestContext::SetupAOTMappingsIfNecessary() {
+  if (!DartVM::IsRunningPrecompiledCode()) {
+    return;
   }
+  vm_snapshot_data_ =
+      std::make_unique<fml::NonOwnedMapping>(aot_symbols_.vm_snapshot_data, 0u);
+  vm_snapshot_instructions_ = std::make_unique<fml::NonOwnedMapping>(
+      aot_symbols_.vm_snapshot_instrs, 0u);
+  isolate_snapshot_data_ =
+      std::make_unique<fml::NonOwnedMapping>(aot_symbols_.vm_isolate_data, 0u);
+  isolate_snapshot_instructions_ = std::make_unique<fml::NonOwnedMapping>(
+      aot_symbols_.vm_isolate_instrs, 0u);
+}
+
+void EmbedderTestContext::SetupAOTDataIfNecessary() {
+  if (!DartVM::IsRunningPrecompiledCode()) {
+    return;
+  }
+  FlutterEngineAOTDataSource data_in = {};
+  FlutterEngineAOTData data_out = nullptr;
+
+  const auto elf_path =
+      fml::paths::JoinPaths({GetFixturesPath(), kAOTAppELFFileName});
+
+  data_in.type = kFlutterEngineAOTDataSourceTypeElfPath;
+  data_in.elf_path = elf_path.c_str();
+
+  ASSERT_EQ(FlutterEngineCreateAOTData(&data_in, &data_out), kSuccess);
+
+  aot_data_.reset(data_out);
 }
 
 const std::string& EmbedderTestContext::GetAssetsPath() const {
@@ -80,6 +83,10 @@ const fml::Mapping* EmbedderTestContext::GetIsolateSnapshotData() const {
 const fml::Mapping* EmbedderTestContext::GetIsolateSnapshotInstructions()
     const {
   return isolate_snapshot_instructions_.get();
+}
+
+FlutterEngineAOTData EmbedderTestContext::GetAOTData() const {
+  return aot_data_.get();
 }
 
 void EmbedderTestContext::SetRootSurfaceTransformation(SkMatrix matrix) {
@@ -111,18 +118,18 @@ void EmbedderTestContext::AddNativeCallback(const char* name,
 }
 
 void EmbedderTestContext::SetSemanticsNodeCallback(
-    SemanticsNodeCallback update_semantics_node_callback) {
+    const SemanticsNodeCallback& update_semantics_node_callback) {
   update_semantics_node_callback_ = update_semantics_node_callback;
 }
 
 void EmbedderTestContext::SetSemanticsCustomActionCallback(
-    SemanticsActionCallback update_semantics_custom_action_callback) {
+    const SemanticsActionCallback& update_semantics_custom_action_callback) {
   update_semantics_custom_action_callback_ =
       update_semantics_custom_action_callback;
 }
 
 void EmbedderTestContext::SetPlatformMessageCallback(
-    std::function<void(const FlutterPlatformMessage*)> callback) {
+    const std::function<void(const FlutterPlatformMessage*)>& callback) {
   platform_message_callback_ = callback;
 }
 
@@ -153,71 +160,27 @@ EmbedderTestContext::GetUpdateSemanticsCustomActionCallbackHook() {
   };
 }
 
-void EmbedderTestContext::SetupOpenGLSurface(SkISize surface_size) {
-  FML_CHECK(!gl_surface_);
-  gl_surface_ = std::make_unique<TestGLSurface>(surface_size);
-}
-
-bool EmbedderTestContext::GLMakeCurrent() {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  return gl_surface_->MakeCurrent();
-}
-
-bool EmbedderTestContext::GLClearCurrent() {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  return gl_surface_->ClearCurrent();
-}
-
-bool EmbedderTestContext::GLPresent() {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  gl_surface_present_count_++;
-
-  FireRootSurfacePresentCallbackIfPresent(
-      [&]() { return gl_surface_->GetRasterSurfaceSnapshot(); });
-
-  if (!gl_surface_->Present()) {
-    return false;
-  }
-
-  return true;
-}
-
-uint32_t EmbedderTestContext::GLGetFramebuffer() {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  return gl_surface_->GetFramebuffer();
-}
-
-bool EmbedderTestContext::GLMakeResourceCurrent() {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  return gl_surface_->MakeResourceCurrent();
-}
-
-void* EmbedderTestContext::GLGetProcAddress(const char* name) {
-  FML_CHECK(gl_surface_) << "GL surface must be initialized.";
-  return gl_surface_->GetProcAddress(name);
+FlutterComputePlatformResolvedLocaleCallback
+EmbedderTestContext::GetComputePlatformResolvedLocaleCallbackHook() {
+  return [](const FlutterLocale** supported_locales,
+            size_t length) -> const FlutterLocale* {
+    return supported_locales[0];
+  };
 }
 
 FlutterTransformation EmbedderTestContext::GetRootSurfaceTransformation() {
   return FlutterTransformationMake(root_surface_transformation_);
 }
 
-void EmbedderTestContext::SetupCompositor() {
-  FML_CHECK(!compositor_) << "Already ssetup a compositor in this context.";
-  FML_CHECK(gl_surface_)
-      << "Setup the GL surface before setting up a compositor.";
-  compositor_ = std::make_unique<EmbedderTestCompositor>(
-      gl_surface_->GetSurfaceSize(), gl_surface_->GetGrContext());
-}
-
 EmbedderTestCompositor& EmbedderTestContext::GetCompositor() {
   FML_CHECK(compositor_)
-      << "Accessed the compositor on a context where one was not setup. Use "
-         "the config builder to setup a context with a custom compositor.";
+      << "Accessed the compositor on a context where one was not set up. Use "
+         "the config builder to set up a context with a custom compositor.";
   return *compositor_;
 }
 
 void EmbedderTestContext::SetNextSceneCallback(
-    NextSceneCallback next_scene_callback) {
+    const NextSceneCallback& next_scene_callback) {
   if (compositor_) {
     compositor_->SetNextSceneCallback(next_scene_callback);
     return;
@@ -225,24 +188,19 @@ void EmbedderTestContext::SetNextSceneCallback(
   next_scene_callback_ = next_scene_callback;
 }
 
-bool EmbedderTestContext::SofwarePresent(sk_sp<SkImage> image) {
-  software_surface_present_count_++;
-
-  FireRootSurfacePresentCallbackIfPresent([image] { return image; });
-
-  return true;
+std::future<sk_sp<SkImage>> EmbedderTestContext::GetNextSceneImage() {
+  std::promise<sk_sp<SkImage>> promise;
+  auto future = promise.get_future();
+  SetNextSceneCallback(
+      fml::MakeCopyable([promise = std::move(promise)](auto image) mutable {
+        promise.set_value(image);
+      }));
+  return future;
 }
 
-size_t EmbedderTestContext::GetGLSurfacePresentCount() const {
-  return gl_surface_present_count_;
-}
-
-size_t EmbedderTestContext::GetSoftwareSurfacePresentCount() const {
-  return software_surface_present_count_;
-}
-
+/// @note Procedure doesn't copy all closures.
 void EmbedderTestContext::FireRootSurfacePresentCallbackIfPresent(
-    std::function<sk_sp<SkImage>(void)> image_callback) {
+    const std::function<sk_sp<SkImage>(void)>& image_callback) {
   if (!next_scene_callback_) {
     return;
   }

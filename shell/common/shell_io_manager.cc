@@ -4,13 +4,14 @@
 
 #include "flutter/shell/common/shell_io_manager.h"
 
+#include "flutter/common/graphics/persistent_cache.h"
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/message_loop.h"
-#include "flutter/shell/common/persistent_cache.h"
 #include "third_party/skia/include/gpu/gl/GrGLInterface.h"
 
 namespace flutter {
 
-sk_sp<GrContext> ShellIOManager::CreateCompatibleResourceLoadingContext(
+sk_sp<GrDirectContext> ShellIOManager::CreateCompatibleResourceLoadingContext(
     GrBackend backend,
     sk_sp<const GrGLInterface> gl_interface) {
   if (backend != GrBackend::kOpenGL_GrBackend) {
@@ -38,27 +39,33 @@ sk_sp<GrContext> ShellIOManager::CreateCompatibleResourceLoadingContext(
   // ES2 shading language when the ES3 external image extension is missing.
   options.fPreferExternalImagesOverES3 = true;
 
-  if (auto context = GrContext::MakeGL(gl_interface, options)) {
+#if !OS_FUCHSIA
+  if (auto context = GrDirectContext::MakeGL(gl_interface, options)) {
     // Do not cache textures created by the image decoder.  These textures
     // should be deleted when they are no longer referenced by an SkImage.
     context->setResourceCacheLimits(0, 0);
     return context;
   }
+#endif
 
   return nullptr;
 }
 
 ShellIOManager::ShellIOManager(
-    sk_sp<GrContext> resource_context,
+    sk_sp<GrDirectContext> resource_context,
+    std::shared_ptr<fml::SyncSwitch> is_gpu_disabled_sync_switch,
     fml::RefPtr<fml::TaskRunner> unref_queue_task_runner)
     : resource_context_(std::move(resource_context)),
       resource_context_weak_factory_(
-          resource_context_ ? std::make_unique<fml::WeakPtrFactory<GrContext>>(
-                                  resource_context_.get())
-                            : nullptr),
+          resource_context_
+              ? std::make_unique<fml::WeakPtrFactory<GrDirectContext>>(
+                    resource_context_.get())
+              : nullptr),
       unref_queue_(fml::MakeRefCounted<flutter::SkiaUnrefQueue>(
           std::move(unref_queue_task_runner),
-          fml::TimeDelta::FromMilliseconds(8))),
+          fml::TimeDelta::FromMilliseconds(8),
+          GetResourceContext())),
+      is_gpu_disabled_sync_switch_(is_gpu_disabled_sync_switch),
       weak_factory_(this) {
   if (!resource_context_) {
 #ifndef OS_FUCHSIA
@@ -72,11 +79,12 @@ ShellIOManager::ShellIOManager(
 ShellIOManager::~ShellIOManager() {
   // Last chance to drain the IO queue as the platform side reference to the
   // underlying OpenGL context may be going away.
-  unref_queue_->Drain();
+  is_gpu_disabled_sync_switch_->Execute(
+      fml::SyncSwitch::Handlers().SetIfFalse([&] { unref_queue_->Drain(); }));
 }
 
 void ShellIOManager::NotifyResourceContextAvailable(
-    sk_sp<GrContext> resource_context) {
+    sk_sp<GrDirectContext> resource_context) {
   // The resource context needs to survive as long as we have Dart objects
   // referencing. We shouldn't ever need to replace it if we have one - unless
   // we've somehow shut down the Dart VM and started a new one fresh.
@@ -85,12 +93,14 @@ void ShellIOManager::NotifyResourceContextAvailable(
   }
 }
 
-void ShellIOManager::UpdateResourceContext(sk_sp<GrContext> resource_context) {
+void ShellIOManager::UpdateResourceContext(
+    sk_sp<GrDirectContext> resource_context) {
   resource_context_ = std::move(resource_context);
   resource_context_weak_factory_ =
-      resource_context_ ? std::make_unique<fml::WeakPtrFactory<GrContext>>(
-                              resource_context_.get())
-                        : nullptr;
+      resource_context_
+          ? std::make_unique<fml::WeakPtrFactory<GrDirectContext>>(
+                resource_context_.get())
+          : nullptr;
 }
 
 fml::WeakPtr<ShellIOManager> ShellIOManager::GetWeakPtr() {
@@ -98,10 +108,10 @@ fml::WeakPtr<ShellIOManager> ShellIOManager::GetWeakPtr() {
 }
 
 // |IOManager|
-fml::WeakPtr<GrContext> ShellIOManager::GetResourceContext() const {
+fml::WeakPtr<GrDirectContext> ShellIOManager::GetResourceContext() const {
   return resource_context_weak_factory_
              ? resource_context_weak_factory_->GetWeakPtr()
-             : fml::WeakPtr<GrContext>();
+             : fml::WeakPtr<GrDirectContext>();
 }
 
 // |IOManager|
@@ -112,6 +122,11 @@ fml::RefPtr<flutter::SkiaUnrefQueue> ShellIOManager::GetSkiaUnrefQueue() const {
 // |IOManager|
 fml::WeakPtr<IOManager> ShellIOManager::GetWeakIOManager() const {
   return weak_factory_.GetWeakPtr();
+}
+
+// |IOManager|
+std::shared_ptr<fml::SyncSwitch> ShellIOManager::GetIsGpuDisabledSyncSwitch() {
+  return is_gpu_disabled_sync_switch_;
 }
 
 }  // namespace flutter

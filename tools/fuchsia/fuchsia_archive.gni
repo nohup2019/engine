@@ -2,6 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//flutter/tools/fuchsia/fuchsia_debug_symbols.gni")
+import("//flutter/tools/fuchsia/fuchsia_libs.gni")
+
 # Creates a Fuchsia archive (.far) file using PM from the Fuchsia SDK.
 template("fuchsia_archive") {
   assert(defined(invoker.binary), "package must define binary")
@@ -52,17 +55,17 @@ template("fuchsia_archive") {
     copy_outputs += [ "$far_base_dir/lib/${lib.name}" ]
   }
 
-  meta_dir = pkg.meta_dir
-
   cmx_target = "$pkg_target_name.copy_cmx"
 
+  if (defined(invoker.cmx_file)) {
+    cmx_file = invoker.cmx_file
+  } else {
+    cmx_file = "${pkg.meta_dir}/${pkg_target_name}.cmx"
+  }
+
   copy("$cmx_target") {
-    sources = [
-      "${meta_dir}/${pkg_target_name}.cmx",
-    ]
-    outputs = [
-      "$far_base_dir/meta/{{source_file_part}}",
-    ]
+    sources = [ "$cmx_file" ]
+    outputs = [ "$far_base_dir/meta/${pkg_target_name}.cmx" ]
   }
 
   write_file("${far_base_dir}/meta/package",
@@ -72,10 +75,17 @@ template("fuchsia_archive") {
              },
              "json")
 
+  _dbg_symbols_target = "${target_name}_dbg_symbols"
+  fuchsia_debug_symbols(_dbg_symbols_target) {
+    deps = pkg.deps
+    testonly = pkg_testonly
+    binary = invoker.binary
+  }
+
   pkg_dir_deps = pkg.deps + [ ":$cmx_target" ]
 
   action("${target_name}_dir") {
-    script = "$flutter_root/tools/fuchsia/copy_path.py"
+    script = "//flutter/tools/fuchsia/copy_path.py"
     sources = copy_sources
     response_file_contents = rebase_path(copy_sources + copy_outputs)
     deps = pkg_dir_deps
@@ -85,8 +95,11 @@ template("fuchsia_archive") {
   }
 
   action(target_name) {
-    script = "$flutter_root/tools/fuchsia/gen_package.py"
-    deps = pkg_dir_deps + [ ":${target_name}_dir" ]
+    script = "//flutter/tools/fuchsia/gen_package.py"
+    deps = pkg_dir_deps + [
+             ":${target_name}_dir",
+             ":${_dbg_symbols_target}",
+           ]
     sources = copy_outputs
 
     inputs = []
@@ -106,8 +119,31 @@ template("fuchsia_archive") {
     ]
     outputs = [
       "${far_base_dir}.manifest",
-      "$root_out_dir/${target_name}.far",
+      "$root_out_dir/${target_name}-0.far",
     ]
     testonly = pkg_testonly
+  }
+}
+
+template("fuchsia_test_archive") {
+  fuchsia_archive(target_name) {
+    testonly = true
+    libraries = common_libs
+
+    assert(defined(invoker.deps), "package must define deps")
+
+    deps = invoker.deps
+    binary = invoker.binary
+
+    if (defined(invoker.resources)) {
+      resources = invoker.resources
+    }
+
+    if (defined(invoker.libraries)) {
+      libraries += invoker.libraries
+    }
+
+    meta_dir = "//flutter/testing/fuchsia/meta"
+    cmx_file = "$meta_dir/fuchsia_test.cmx"
   }
 }

@@ -26,6 +26,8 @@ namespace flutter {
 ///
 class GPUSurfaceSoftwareDelegate {
  public:
+  ~GPUSurfaceSoftwareDelegate();
+
   //----------------------------------------------------------------------------
   /// @brief      Called when the GPU surface needs a new buffer to render a new
   ///             frame into.
@@ -46,18 +48,6 @@ class GPUSurfaceSoftwareDelegate {
   ///             the screen.
   ///
   virtual bool PresentBackingStore(sk_sp<SkSurface> backing_store) = 0;
-
-  //----------------------------------------------------------------------------
-  /// @brief      Gets the view embedder that controls how the Flutter layer
-  ///             hierarchy split into multiple chunks should be composited back
-  ///             on-screen. This field is optional and the Flutter rasterizer
-  ///             will render into a single on-screen surface if this call
-  ///             returns a null external view embedder.
-  ///
-  /// @return     The external view embedder, or, null if Flutter is rendering
-  ///             into a single on-screen surface.
-  ///
-  virtual ExternalViewEmbedder* GetExternalViewEmbedder() = 0;
 };
 
 }  // namespace flutter

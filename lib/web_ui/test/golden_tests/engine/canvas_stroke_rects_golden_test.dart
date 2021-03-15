@@ -2,22 +2,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// @dart = 2.6
 import 'dart:html' as html;
 import 'dart:math' as math;
 
+import 'package:test/bootstrap/browser.dart';
+import 'package:test/test.dart';
 import 'package:ui/src/engine.dart';
 import 'package:ui/ui.dart';
-import 'package:test/test.dart';
 
 import 'package:web_engine_tester/golden_tester.dart';
 
-void main() async {
+void main() {
+  internalBootstrapBrowserTest(() => testMain);
+}
+
+void testMain() async {
   final Rect region = Rect.fromLTWH(0, 0, 300, 300);
 
   BitmapCanvas canvas;
 
   setUp(() {
-    canvas = BitmapCanvas(region);
+    canvas = BitmapCanvas(region, RenderStrategy());
   });
 
   tearDown(() {
@@ -30,22 +36,22 @@ void main() async {
 
     html.document.body.append(canvas.rootElement);
     await matchGoldenFile('canvas_stroke_rects.png', region: region);
-  }, timeout: const Timeout(Duration(seconds: 10)));
+  });
 
 }
 
 void paintSideBySideRects(BitmapCanvas canvas) {
   canvas.drawRect(Rect.fromLTRB(0, 0, 300, 300),
-      PaintData()
+      SurfacePaintData()
         ..color = Color(0xFFFFFFFF)
         ..style = PaintingStyle.fill); // white
 
     canvas.drawRect(Rect.fromLTRB(0, 20, 40, 60),
-        PaintData()
+        SurfacePaintData()
           ..style = PaintingStyle.fill
           ..color = Color(0x7f0000ff));
     canvas.drawRect(Rect.fromLTRB(40, 20, 80, 60),
-        PaintData()
+        SurfacePaintData()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 4
           ..color = Color(0x7fff0000));
@@ -54,11 +60,11 @@ void paintSideBySideRects(BitmapCanvas canvas) {
     canvas.transform(new Matrix4.rotationZ(30.0 * math.pi / 180.0).storage);
 
     canvas.drawRect(Rect.fromLTRB(100, 60, 140, 100),
-        PaintData()
+        SurfacePaintData()
           ..style = PaintingStyle.fill
           ..color = Color(0x7fff00ff));
     canvas.drawRect(Rect.fromLTRB(140, 60, 180, 100),
-        PaintData()
+        SurfacePaintData()
           ..style = PaintingStyle.stroke
           ..strokeWidth = 4
           ..color = Color(0x7fffff00));

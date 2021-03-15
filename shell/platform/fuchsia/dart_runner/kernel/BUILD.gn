@@ -4,9 +4,9 @@
 
 import("//build/compiled_action.gni")
 import("//build/fuchsia/sdk.gni")
+import("//flutter/common/config.gni")
+import("//flutter/tools/fuchsia/dart.gni")
 import("//third_party/dart/utils/compile_platform.gni")
-import("$flutter_root/common/config.gni")
-import("$flutter_root/tools/fuchsia/dart.gni")
 
 compile_platform("kernel_platform_files") {
   single_root_scheme = "org-dartlang-sdk"
@@ -20,9 +20,8 @@ compile_platform("kernel_platform_files") {
   ]
 
   args = [
-    # TODO(dartbug.com/36342): enable bytecode for core libraries when performance of bytecode
-    # pipeline is on par with default pipeline and continuously tracked.
-    # "--bytecode",
+    "--enable-experiment=non-nullable",
+    "--nnbd-agnostic",
     "--target=dart_runner",
     "dart:core",
   ]
@@ -36,13 +35,11 @@ template("create_kernel_core_snapshot") {
   }
 
   compiled_action(target_name) {
-    deps = [
-      ":kernel_platform_files",
-    ]
+    deps = [ ":kernel_platform_files" ]
 
     platform_dill = "$root_out_dir/dart_runner_patched_sdk/platform_strong.dill"
     compilation_trace =
-        "$flutter_root/shell/platform/fuchsia/flutter/compilation_trace.txt"
+        "//flutter/shell/platform/fuchsia/flutter/compilation_trace.txt"
     inputs = [
       platform_dill,
       compilation_trace,
@@ -71,10 +68,8 @@ template("create_kernel_core_snapshot") {
     tool = gen_snapshot_to_use
 
     args = [
-      # TODO(FL-117): Re-enable causal async stack traces when this issue is
-      # addressed.
       "--no_causal_async_stacks",
-      "--use_bytecode_compiler",
+      "--lazy_async_stacks",
       "--enable_mirrors=false",
       "--deterministic",
       "--snapshot_kind=core-jit",
